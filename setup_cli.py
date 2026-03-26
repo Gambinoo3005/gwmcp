@@ -47,7 +47,7 @@ def _claude_mcp_json_path():
 
 def _print_header():
     print()
-    print("Google Workspace MCP - Setup")
+    print("gwmcp - Setup")
     print("=" * 40)
     print()
 
@@ -252,7 +252,7 @@ def setup_command():
 
     parser = argparse.ArgumentParser(
         prog="gwmcp setup",
-        description="Set up Google Workspace MCP with guided authentication",
+        description="Set up gwmcp with guided authentication",
     )
     parser.add_argument(
         "--email", "-e",

@@ -189,7 +189,7 @@ def main():
     configure_safe_logging()
 
     # Parse command line arguments
-    parser = argparse.ArgumentParser(description="Google Workspace MCP Server")
+    parser = argparse.ArgumentParser(description="gwmcp - Google Workspace MCP Server")
     parser.add_argument(
         "--single-user",
         action="store_true",
@@ -278,7 +278,7 @@ def main():
     external_url = os.getenv("WORKSPACE_EXTERNAL_URL")
     display_url = external_url if external_url else f"{base_uri}:{port}"
 
-    safe_print("🔧 Google Workspace MCP Server")
+    safe_print("🔧 gwmcp Server")
     safe_print("=" * 35)
     safe_print("📋 Server Information:")
     try:
