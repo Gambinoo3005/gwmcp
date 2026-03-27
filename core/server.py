@@ -468,7 +468,7 @@ def get_auth_provider() -> Optional[GoogleProvider]:
 @server.custom_route("/health", methods=["GET"])
 async def health_check(request: Request):
     try:
-        version = metadata.version("workspace-mcp")
+        version = metadata.version("gwmcp")
     except metadata.PackageNotFoundError:
         version = "dev"
     return JSONResponse(

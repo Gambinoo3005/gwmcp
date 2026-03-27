@@ -53,14 +53,29 @@ def _print_header():
 
 
 def _detect_email_from_credentials():
-    """Auto-detect email from existing credential files."""
+    """Auto-detect email from existing credential files.
+
+    If multiple accounts exist, warns and returns the most recently modified.
+    """
     creds_dir = _credentials_dir()
     if not os.path.isdir(creds_dir):
         return None
+    accounts = []
     for f in os.listdir(creds_dir):
         if f.endswith(".json") and "@" in f:
-            return f[:-5]  # strip .json
-    return None
+            accounts.append(f[:-5])  # strip .json
+    if not accounts:
+        return None
+    if len(accounts) > 1:
+        # Pick most recently modified credential file
+        accounts.sort(
+            key=lambda a: os.path.getmtime(os.path.join(creds_dir, a + ".json")),
+            reverse=True,
+        )
+        print(f"  Note: Found {len(accounts)} accounts: {', '.join(accounts)}")
+        print(f"  Using most recent: {accounts[0]}")
+        print(f"  To use a different account, pass --email explicitly.")
+    return accounts[0]
 
 
 def _validate_client_secret(path):
@@ -175,11 +190,11 @@ def _run_oauth_flow(client_id, client_secret, user_email):
         "forms", "slides", "tasks", "contacts", "search", "appscript",
     ])
 
-    port = 8000
-    base_uri = "http://localhost"
+    port = int(os.environ.get("PORT", os.environ.get("WORKSPACE_MCP_PORT", 8000)))
+    base_uri = os.environ.get("WORKSPACE_MCP_BASE_URI", "http://localhost")
 
     # Start the callback server
-    print("  Starting OAuth callback server on port 8000...")
+    print(f"  Starting OAuth callback server on port {port}...")
     oauth_server = MinimalOAuthServer(port, base_uri)
     success, error_msg = oauth_server.start()
     if not success:

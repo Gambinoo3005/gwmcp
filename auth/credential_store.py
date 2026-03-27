@@ -179,8 +179,15 @@ class LocalDirectoryCredentialStore(CredentialStore):
         }
 
         try:
+            import stat
+
             with open(creds_path, "w") as f:
                 json.dump(creds_data, f, indent=2)
+            # Restrict file permissions to owner-only (0600)
+            try:
+                os.chmod(creds_path, stat.S_IRUSR | stat.S_IWUSR)
+            except OSError:
+                pass  # Windows may not support POSIX permissions
             logger.info(f"Stored credentials for {user_email} to {creds_path}")
             return True
         except IOError as e:

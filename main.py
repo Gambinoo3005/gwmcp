@@ -282,7 +282,7 @@ def main():
     safe_print("=" * 35)
     safe_print("📋 Server Information:")
     try:
-        version = metadata.version("workspace-mcp")
+        version = metadata.version("gwmcp")
     except metadata.PackageNotFoundError:
         version = "dev"
     safe_print(f"   📦 Version: {version}")
