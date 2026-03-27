@@ -234,7 +234,14 @@ gwmcp --cli search_drive_files --args '{"query": "test"}'  # Direct CLI usage
 ## Troubleshooting
 
 ### "Google hasn't verified this app"
-This is expected. Your app is in "Testing" mode, which is fine for personal use. Click **Advanced > Go to gwmcp (unsafe)** to continue.
+This appears because your app is in "Testing" mode. To get past it:
+
+1. Click **Advanced**, then **Go to gwmcp (unsafe)** to continue
+2. If you get blocked entirely, make sure your email is added as a test user:
+   - Go to [Google Cloud Console](https://console.cloud.google.com/) > **APIs & Services** > **OAuth consent screen**
+   - Under **Audience** (or **Test users**), click **Add Users**
+   - Add the Gmail address you're trying to sign in with
+   - Save and try again
 
 ### "Access blocked: This app's request is invalid"
 Make sure the **redirect URI** matches. gwmcp uses `http://localhost:8000/oauth2callback`. You don't need to configure this in Google Cloud for Desktop app credentials — it's handled automatically.
