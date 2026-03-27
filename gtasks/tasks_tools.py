@@ -131,12 +131,11 @@ async def list_task_lists(
         next_page_token = result.get("nextPageToken")
 
         if not task_lists:
-            return f"No task lists found for {user_google_email}."
+            return "No task lists found."
 
-        response = f"Task Lists for {user_google_email}:\n"
-        for task_list in task_lists:
-            response += f"- {task_list['title']} (ID: {task_list['id']})\n"
-            response += f"  Updated: {task_list.get('updated', 'N/A')}\n"
+        response = f"Found {len(task_lists)} task lists:\n"
+        for i, task_list in enumerate(task_lists, 1):
+            response += f"  {i}. {task_list['title']}\n"
 
         if next_page_token:
             response += f"\nNext page token: {next_page_token}"
@@ -179,11 +178,7 @@ async def get_task_list(
             service.tasklists().get(tasklist=task_list_id).execute
         )
 
-        response = f"""Task List Details for {user_google_email}:
-- Title: {task_list["title"]}
-- ID: {task_list["id"]}
-- Updated: {task_list.get("updated", "N/A")}
-- Self Link: {task_list.get("selfLink", "N/A")}"""
+        response = f'Task list "{task_list["title"]}"'
 
         logger.info(
             f"Retrieved task list '{task_list['title']}' for {user_google_email}"
@@ -215,11 +210,7 @@ async def _create_task_list_impl(
 
     result = await asyncio.to_thread(service.tasklists().insert(body=body).execute)
 
-    response = f"""Task List Created for {user_google_email}:
-- Title: {result["title"]}
-- ID: {result["id"]}
-- Created: {result.get("updated", "N/A")}
-- Self Link: {result.get("selfLink", "N/A")}"""
+    response = f'Created task list "{result["title"]}"'
 
     logger.info(
         f"Created task list '{title}' with ID {result['id']} for {user_google_email}"
@@ -241,10 +232,7 @@ async def _update_task_list_impl(
         service.tasklists().update(tasklist=task_list_id, body=body).execute
     )
 
-    response = f"""Task List Updated for {user_google_email}:
-- Title: {result["title"]}
-- ID: {result["id"]}
-- Updated: {result.get("updated", "N/A")}"""
+    response = f'Updated task list \u2014 renamed to "{result["title"]}"'
 
     logger.info(
         f"Updated task list {task_list_id} with new title '{title}' for {user_google_email}"
@@ -262,7 +250,7 @@ async def _delete_task_list_impl(
 
     await asyncio.to_thread(service.tasklists().delete(tasklist=task_list_id).execute)
 
-    response = f"Task list {task_list_id} has been deleted for {user_google_email}. All tasks in this list have also been deleted."
+    response = f"Deleted task list \u2014 all tasks in this list have also been removed."
 
     logger.info(f"Deleted task list {task_list_id} for {user_google_email}")
     return response
@@ -278,7 +266,7 @@ async def _clear_completed_tasks_impl(
 
     await asyncio.to_thread(service.tasks().clear(tasklist=task_list_id).execute)
 
-    response = f"All completed tasks have been cleared from task list {task_list_id} for {user_google_email}. The tasks are now hidden and won't appear in default task list views."
+    response = "Cleared all completed tasks \u2014 they are now hidden from default views."
 
     logger.info(
         f"Cleared completed tasks from list {task_list_id} for {user_google_email}"
@@ -458,14 +446,12 @@ async def list_tasks(
             results_remaining -= len(more_tasks)
 
         if not tasks:
-            return (
-                f"No tasks found in task list {task_list_id} for {user_google_email}."
-            )
+            return "No tasks found."
 
         structured_tasks = get_structured_tasks(tasks)
 
-        response = f"Tasks in list {task_list_id} for {user_google_email}:\n"
-        response += serialize_tasks(structured_tasks, 0)
+        response = f"Found {len(tasks)} tasks:\n"
+        response += serialize_tasks(structured_tasks, 0, counter=[1])
 
         if next_page_token:
             response += f"Next page token: {next_page_token}\n"
@@ -553,22 +539,34 @@ def sort_structured_tasks(
         sort_structured_tasks(subtask, positions_by_id)
 
 
-def serialize_tasks(structured_tasks: List[StructuredTask], subtask_level: int) -> str:
+def _format_due(due_str: str) -> str:
+    """Format an RFC 3339 due date into a short human-readable string like 'Mar 28'."""
+    try:
+        parsed = datetime.fromisoformat(due_str.replace("Z", "+00:00"))
+        return parsed.strftime("%b %d").replace(" 0", " ")
+    except (ValueError, AttributeError):
+        return due_str
+
+
+def serialize_tasks(structured_tasks: List[StructuredTask], subtask_level: int, counter: Optional[List[int]] = None) -> str:
     """
     Serialize a list of StructuredTask objects into a formatted string with indentation for subtasks.
     Args:
         structured_tasks (list): List of StructuredTask objects.
         subtask_level (int): Current level of indentation for subtasks.
+        counter (Optional[List[int]]): Mutable counter for numbering top-level tasks.
 
     Returns:
         str: Formatted string representation of the tasks.
     """
+    if counter is None:
+        counter = [1]
+
     response = ""
     placeholder_parent_count = 0
     placeholder_parent_title = "Unknown parent"
     for task in structured_tasks:
-        indent = "  " * subtask_level
-        bullet = "-" if subtask_level == 0 else "*"
+        indent = "  " * (subtask_level + 1)
         if task.title is not None:
             title = task.title
         elif task.is_placeholder_parent:
@@ -576,26 +574,35 @@ def serialize_tasks(structured_tasks: List[StructuredTask], subtask_level: int) 
             placeholder_parent_count += 1
         else:
             title = "Untitled"
-        response += f"{indent}{bullet} {title} (ID: {task.id})\n"
-        response += f"{indent}  Status: {task.status or 'N/A'}\n"
-        response += f"{indent}  Due: {task.due}\n" if task.due else ""
-        if task.notes:
-            response += f"{indent}  Notes: {task.notes[:100]}{'...' if len(task.notes) > 100 else ''}\n"
-        response += f"{indent}  Completed: {task.completed}\n" if task.completed else ""
-        response += f"{indent}  Updated: {task.updated or 'N/A'}\n"
-        response += "\n"
 
-        response += serialize_tasks(task.subtasks, subtask_level + 1)
+        # Build the line: number/bullet, title, due, status
+        parts = [title]
+        if task.due:
+            parts.append(f"due {_format_due(task.due)}")
+        if task.status == "completed" or task.completed:
+            parts.append("completed")
+
+        if subtask_level == 0:
+            line = f"{indent}{counter[0]}. {' \u2014 '.join(parts)}"
+            counter[0] += 1
+        else:
+            line = f"{indent}- {' \u2014 '.join(parts)}"
+
+        response += line + "\n"
+
+        if task.notes:
+            truncated = task.notes[:100] + ("..." if len(task.notes) > 100 else "")
+            response += f"{indent}  Notes: {truncated}\n"
+
+        response += serialize_tasks(task.subtasks, subtask_level + 1, counter=counter)
 
     if placeholder_parent_count > 0:
         # Placeholder parents should only appear at the top level
         assert subtask_level == 0
-        response += f"""
-{placeholder_parent_count} tasks with title {placeholder_parent_title} are included as placeholders.
-These placeholders contain subtasks whose parents were not present in the task list.
-This can occur due to pagination. Callers can often avoid this problem if max_results is large enough to contain all tasks (subtasks and their parents) without paging.
-This can also occur due to filtering that excludes parent tasks while including their subtasks or due to deleted or hidden parent tasks.
-"""
+        response += (
+            f"\nNote: {placeholder_parent_count} placeholder parent(s) are included "
+            "for subtasks whose parents were not in the results (due to pagination or filtering).\n"
+        )
 
     return response
 
@@ -626,26 +633,19 @@ async def get_task(
             service.tasks().get(tasklist=task_list_id, task=task_id).execute
         )
 
-        response = f"""Task Details for {user_google_email}:
-- Title: {task.get("title", "Untitled")}
-- ID: {task["id"]}
-- Status: {task.get("status", "N/A")}
-- Updated: {task.get("updated", "N/A")}"""
-
+        title = task.get("title", "Untitled")
+        parts = [f'Task "{title}"']
         if task.get("due"):
-            response += f"\n- Due Date: {task['due']}"
-        if task.get("completed"):
-            response += f"\n- Completed: {task['completed']}"
+            parts.append(f"due {_format_due(task['due'])}")
+        if task.get("status") == "completed" or task.get("completed"):
+            parts.append("completed")
+
+        response = " \u2014 ".join(parts)
+
         if task.get("notes"):
-            response += f"\n- Notes: {task['notes']}"
-        if task.get("parent"):
-            response += f"\n- Parent Task ID: {task['parent']}"
-        if task.get("position"):
-            response += f"\n- Position: {task['position']}"
-        if task.get("selfLink"):
-            response += f"\n- Self Link: {task['selfLink']}"
+            response += f"\n  Notes: {task['notes']}"
         if task.get("webViewLink"):
-            response += f"\n- Web View Link: {task['webViewLink']}"
+            response += f"\n  Link: {task['webViewLink']}"
 
         logger.info(
             f"Retrieved task '{task.get('title', 'Untitled')}' for {user_google_email}"
@@ -694,18 +694,16 @@ async def _create_task_impl(
 
     result = await asyncio.to_thread(service.tasks().insert(**params).execute)
 
-    response = f"""Task Created for {user_google_email}:
-- Title: {result["title"]}
-- ID: {result["id"]}
-- Status: {result.get("status", "N/A")}
-- Updated: {result.get("updated", "N/A")}"""
-
+    parts = [f'Created task "{result["title"]}"']
     if result.get("due"):
-        response += f"\n- Due Date: {result['due']}"
+        parts.append(f"due {_format_due(result['due'])}")
+
+    response = " \u2014 ".join(parts)
+
     if result.get("notes"):
-        response += f"\n- Notes: {result['notes']}"
+        response += f"\n  Notes: {result['notes']}"
     if result.get("webViewLink"):
-        response += f"\n- Web View Link: {result['webViewLink']}"
+        response += f"\n  Link: {result['webViewLink']}"
 
     logger.info(
         f"Created task '{title}' with ID {result['id']} for {user_google_email}"
@@ -755,18 +753,22 @@ async def _update_task_impl(
         service.tasks().update(tasklist=task_list_id, task=task_id, body=body).execute
     )
 
-    response = f"""Task Updated for {user_google_email}:
-- Title: {result["title"]}
-- ID: {result["id"]}
-- Status: {result.get("status", "N/A")}
-- Updated: {result.get("updated", "N/A")}"""
+    # Build a summary of what changed
+    changes = []
+    if title is not None:
+        changes.append(f'renamed to "{result["title"]}"')
+    if status is not None:
+        if result.get("status") == "completed":
+            changes.append("marked complete")
+        else:
+            changes.append("marked incomplete")
+    if due is not None:
+        changes.append(f"due {_format_due(result['due'])}" if result.get("due") else "due date cleared")
+    if notes is not None:
+        changes.append("notes updated")
 
-    if result.get("due"):
-        response += f"\n- Due Date: {result['due']}"
-    if result.get("notes"):
-        response += f"\n- Notes: {result['notes']}"
-    if result.get("completed"):
-        response += f"\n- Completed: {result['completed']}"
+    summary = ", ".join(changes) if changes else "no changes"
+    response = f'Updated task "{result["title"]}" \u2014 {summary}'
 
     logger.info(f"Updated task {task_id} for {user_google_email}")
     return response
@@ -784,7 +786,7 @@ async def _delete_task_impl(
         service.tasks().delete(tasklist=task_list_id, task=task_id).execute
     )
 
-    response = f"Task {task_id} has been deleted from task list {task_list_id} for {user_google_email}."
+    response = "Deleted task."
 
     logger.info(f"Deleted task {task_id} for {user_google_email}")
     return response
@@ -814,27 +816,16 @@ async def _move_task_impl(
 
     result = await asyncio.to_thread(service.tasks().move(**params).execute)
 
-    response = f"""Task Moved for {user_google_email}:
-- Title: {result["title"]}
-- ID: {result["id"]}
-- Status: {result.get("status", "N/A")}
-- Updated: {result.get("updated", "N/A")}"""
-
-    if result.get("parent"):
-        response += f"\n- Parent Task ID: {result['parent']}"
-    if result.get("position"):
-        response += f"\n- Position: {result['position']}"
-
     move_details = []
     if destination_task_list:
-        move_details.append(f"moved to task list {destination_task_list}")
+        move_details.append("moved to another list")
     if parent:
-        move_details.append(f"made a subtask of {parent}")
+        move_details.append("made a subtask")
     if previous:
-        move_details.append(f"positioned after {previous}")
+        move_details.append("repositioned")
 
-    if move_details:
-        response += f"\n- Move Details: {', '.join(move_details)}"
+    summary = ", ".join(move_details) if move_details else "repositioned"
+    response = f'Moved task "{result["title"]}" \u2014 {summary}'
 
     logger.info(f"Moved task {task_id} for {user_google_email}")
     return response

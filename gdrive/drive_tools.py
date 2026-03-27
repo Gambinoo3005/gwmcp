@@ -128,23 +128,32 @@ async def search_drive_files(
     results = await asyncio.to_thread(service.files().list(**list_params).execute)
     files = results.get("files", [])
     if not files:
-        return f"No files found for '{query}'."
+        return f'No files found matching "{query}"'
 
     next_token = results.get("nextPageToken")
-    header = f"Found {len(files)} files for {user_google_email} matching '{query}':"
+    header = f'Found {len(files)} files matching "{query}":'
     formatted_files_text_parts = [header]
-    for item in files:
+    for idx, item in enumerate(files, 1):
+        mime = item.get("mimeType", "")
+        friendly_type = mime.split(".")[-1].replace("-", " ").title() if "google-apps" in mime else mime.split("/")[-1].upper()
         if detailed:
-            size_str = f", Size: {item.get('size', 'N/A')}" if "size" in item else ""
+            size_str = f", {item['size']}B" if "size" in item else ""
+            mod_time = item.get("modifiedTime", "")
+            mod_display = mod_time[:10] if mod_time else "N/A"
+            link = item.get("webViewLink", "")
             formatted_files_text_parts.append(
-                f'- Name: "{item["name"]}" (ID: {item["id"]}, Type: {item["mimeType"]}{size_str}, Modified: {item.get("modifiedTime", "N/A")}) Link: {item.get("webViewLink", "#")}'
+                f'  {idx}. {item["name"]} ({friendly_type}{size_str}) — Modified {mod_display}'
             )
+            if link:
+                formatted_files_text_parts.append(
+                    f'     {link}'
+                )
         else:
             formatted_files_text_parts.append(
-                f'- Name: "{item["name"]}" (ID: {item["id"]}, Type: {item["mimeType"]})'
+                f'  {idx}. {item["name"]} ({friendly_type})'
             )
     if next_token:
-        formatted_files_text_parts.append(f"nextPageToken: {next_token}")
+        formatted_files_text_parts.append(f"\nnextPageToken: {next_token}")
     text_output = "\n".join(formatted_files_text_parts)
     return text_output
 
@@ -233,9 +242,11 @@ async def get_drive_file_content(
             )
 
     # Assemble response
+    mime = mime_type
+    friendly_type = mime.split(".")[-1].replace("-", " ").title() if "google-apps" in mime else mime.split("/")[-1].upper()
+    size_display = f"{len(file_content_bytes)}B"
     header = (
-        f'File: "{file_name}" (ID: {file_id}, Type: {mime_type})\n'
-        f"Link: {file_metadata.get('webViewLink', '#')}\n\n--- CONTENT ---\n"
+        f'File "{file_name}" ({friendly_type}, {size_display}):\n---\n'
     )
     return header + body_text
 
@@ -364,14 +375,10 @@ async def get_drive_file_download_url(
     # Check if we're in stateless mode (can't save files)
     if is_stateless_mode():
         result_lines = [
-            "File downloaded successfully!",
-            f"File: {file_name}",
-            f"File ID: {file_id}",
-            f"Size: {size_kb:.1f} KB ({size_bytes} bytes)",
-            f"MIME Type: {output_mime_type}",
-            "\n⚠️ Stateless mode: File storage disabled.",
-            "\nBase64-encoded content (first 100 characters shown):",
-            f"{base64.b64encode(file_content_bytes[:100]).decode('utf-8')}...",
+            f'Download "{file_name}" ({size_kb:.1f}KB)',
+            "",
+            "Stateless mode: File storage disabled.",
+            f"Base64 preview: {base64.b64encode(file_content_bytes[:100]).decode('utf-8')}...",
         ]
         logger.info(
             f"[get_drive_file_download_url] Successfully downloaded {size_kb:.1f} KB file (stateless mode)"
@@ -392,27 +399,20 @@ async def get_drive_file_download_url(
             mime_type=output_mime_type,
         )
 
-        result_lines = [
-            "File downloaded successfully!",
-            f"File: {file_name}",
-            f"File ID: {file_id}",
-            f"Size: {size_kb:.1f} KB ({size_bytes} bytes)",
-            f"MIME Type: {output_mime_type}",
-        ]
-
         if get_transport_mode() == "stdio":
-            result_lines.append(f"\n📎 Saved to: {result.path}")
-            result_lines.append(
-                "\nThe file has been saved to disk and can be accessed directly via the file path."
-            )
+            result_lines = [
+                f'Download "{file_name}" ({size_kb:.1f}KB) — {result.path}',
+            ]
         else:
             download_url = get_attachment_url(result.file_id)
-            result_lines.append(f"\n📎 Download URL: {download_url}")
-            result_lines.append("\nThe file will expire after 1 hour.")
+            result_lines = [
+                f'Download "{file_name}" ({size_kb:.1f}KB) — {download_url}',
+                "Link expires in 1 hour.",
+            ]
 
         if export_mime_type:
             result_lines.append(
-                f"\nNote: Google native file exported to {output_mime_type} format."
+                f"Exported from Google native format to {output_mime_type}."
             )
 
         logger.info(
@@ -493,25 +493,32 @@ async def list_drive_items(
     results = await asyncio.to_thread(service.files().list(**list_params).execute)
     files = results.get("files", [])
     if not files:
-        return f"No items found in folder '{folder_id}'."
+        return f'No items found in folder "{folder_id}"'
 
     next_token = results.get("nextPageToken")
-    header = (
-        f"Found {len(files)} items in folder '{folder_id}' for {user_google_email}:"
-    )
+    header = f'Found {len(files)} items in folder "{folder_id}":'
     formatted_items_text_parts = [header]
-    for item in files:
+    for idx, item in enumerate(files, 1):
+        mime = item.get("mimeType", "")
+        friendly_type = mime.split(".")[-1].replace("-", " ").title() if "google-apps" in mime else mime.split("/")[-1].upper()
         if detailed:
-            size_str = f", Size: {item.get('size', 'N/A')}" if "size" in item else ""
+            size_str = f", {item['size']}B" if "size" in item else ""
+            mod_time = item.get("modifiedTime", "")
+            mod_display = mod_time[:10] if mod_time else "N/A"
+            link = item.get("webViewLink", "")
             formatted_items_text_parts.append(
-                f'- Name: "{item["name"]}" (ID: {item["id"]}, Type: {item["mimeType"]}{size_str}, Modified: {item.get("modifiedTime", "N/A")}) Link: {item.get("webViewLink", "#")}'
+                f'  {idx}. {item["name"]} ({friendly_type}{size_str}) — Modified {mod_display}'
             )
+            if link:
+                formatted_items_text_parts.append(
+                    f'     {link}'
+                )
         else:
             formatted_items_text_parts.append(
-                f'- Name: "{item["name"]}" (ID: {item["id"]}, Type: {item["mimeType"]})'
+                f'  {idx}. {item["name"]} ({friendly_type})'
             )
     if next_token:
-        formatted_items_text_parts.append(f"nextPageToken: {next_token}")
+        formatted_items_text_parts.append(f"\nnextPageToken: {next_token}")
     text_output = "\n".join(formatted_items_text_parts)
     return text_output
 
@@ -539,10 +546,7 @@ async def _create_drive_folder_impl(
         .execute
     )
     link = created_file.get("webViewLink", "")
-    return (
-        f"Successfully created folder '{created_file.get('name', folder_name)}' (ID: {created_file.get('id', 'N/A')}) "
-        f"in folder '{parent_folder_id}' for {user_google_email}. Link: {link}"
-    )
+    return f'Created folder "{created_file.get("name", folder_name)}" — {link}'
 
 
 @server.tool()
@@ -811,7 +815,7 @@ async def create_drive_file(
         )
 
     link = created_file.get("webViewLink", "No link available")
-    confirmation_message = f"Successfully created file '{created_file.get('name', file_name)}' (ID: {created_file.get('id', 'N/A')}) in folder '{folder_id}' for {user_google_email}. Link: {link}"
+    confirmation_message = f'Created file "{created_file.get("name", file_name)}" in folder "{folder_id}" — {link}'
     logger.info(f"Successfully created file. Link: {link}")
     return confirmation_message
 
@@ -1316,15 +1320,8 @@ async def import_to_google_doc(
         )
 
     link = created_file.get("webViewLink", "No link available")
-    doc_id = created_file.get("id", "N/A")
 
-    confirmation = (
-        f"✅ Successfully imported '{doc_name}' as Google Doc\n"
-        f"   Document ID: {doc_id}\n"
-        f"   Source format: {source_mime_type}\n"
-        f"   Folder: {folder_id}\n"
-        f"   Link: {link}"
-    )
+    confirmation = f'Created file "{doc_name}" (imported from {source_mime_type}) in folder "{folder_id}" — {link}'
 
     logger.info(f"[import_to_google_doc] Success. Link: {link}")
     return confirmation
@@ -1372,47 +1369,46 @@ async def get_drive_file_permissions(
         )
 
         # Format the response
+        file_name = file_metadata.get('name', 'Unknown')
+        mime = file_metadata.get('mimeType', 'Unknown')
+        friendly_type = mime.split(".")[-1].replace("-", " ").title() if "google-apps" in mime else mime.split("/")[-1].upper()
+        size_raw = file_metadata.get('size')
+        size_display = f"{size_raw}B" if size_raw else "N/A"
+        mod_time = file_metadata.get('modifiedTime', '')
+        mod_display = mod_time[:10] if mod_time else "N/A"
+
+        permissions = file_metadata.get("permissions", [])
+        perm_count = len(permissions)
+
         output_parts = [
-            f"File: {file_metadata.get('name', 'Unknown')}",
-            f"ID: {file_id}",
-            f"Type: {file_metadata.get('mimeType', 'Unknown')}",
-            f"Size: {file_metadata.get('size', 'N/A')} bytes",
-            f"Modified: {file_metadata.get('modifiedTime', 'N/A')}",
-            "",
-            "Sharing Status:",
-            f"  Shared: {file_metadata.get('shared', False)}",
+            f'File "{file_name}" ({friendly_type}, {size_display}, shared with {perm_count} {"person" if perm_count == 1 else "people"}):',
+            f"Modified {mod_display}",
         ]
 
         # Add sharing user if available
         sharing_user = file_metadata.get("sharingUser")
         if sharing_user:
             output_parts.append(
-                f"  Shared by: {sharing_user.get('displayName', 'Unknown')} ({sharing_user.get('emailAddress', 'Unknown')})"
+                f"Shared by: {sharing_user.get('displayName', 'Unknown')} ({sharing_user.get('emailAddress', 'Unknown')})"
             )
 
         # Process permissions
-        permissions = file_metadata.get("permissions", [])
         if permissions:
-            output_parts.append(f"  Number of permissions: {len(permissions)}")
-            output_parts.append("  Permissions:")
+            output_parts.append("")
+            output_parts.append("Permissions:")
             for perm in permissions:
-                output_parts.append(f"    - {format_permission_info(perm)}")
+                output_parts.append(f"  - {format_permission_info(perm)}")
         else:
-            output_parts.append("  No additional permissions (private file)")
+            output_parts.append("\nNo additional permissions (private file)")
 
-        # Add URLs
-        output_parts.extend(
-            [
-                "",
-                "URLs:",
-                f"  View Link: {file_metadata.get('webViewLink', 'N/A')}",
-            ]
-        )
+        link = file_metadata.get('webViewLink', '')
+        if link:
+            output_parts.extend(["", link])
 
         # webContentLink is only available for files that can be downloaded
         web_content_link = file_metadata.get("webContentLink")
         if web_content_link:
-            output_parts.append(f"  Direct Download Link: {web_content_link}")
+            output_parts.append(f"Direct download — {web_content_link}")
 
         has_public_link = check_public_link_permission(permissions)
 
@@ -1420,15 +1416,15 @@ async def get_drive_file_permissions(
             output_parts.extend(
                 [
                     "",
-                    "✅ This file is shared with 'Anyone with the link' - it can be inserted into Google Docs",
+                    "Public link sharing is enabled — can be inserted into Google Docs",
                 ]
             )
         else:
             output_parts.extend(
                 [
                     "",
-                    "❌ This file is NOT shared with 'Anyone with the link' - it cannot be inserted into Google Docs",
-                    "   To fix: Right-click the file in Google Drive → Share → Anyone with the link → Viewer",
+                    "No public link sharing — cannot be inserted into Google Docs",
+                    "To fix: Drive > Share > Anyone with the link > Viewer",
                 ]
             )
 
@@ -1436,7 +1432,7 @@ async def get_drive_file_permissions(
 
     except Exception as e:
         logger.error(f"Error getting file permissions: {e}")
-        return f"Error getting file permissions: {e}"
+        return f"Error: {e}"
 
 
 @server.tool()
@@ -1477,13 +1473,13 @@ async def check_drive_file_public_access(
 
     files = results.get("files", [])
     if not files:
-        return f"No file found with name '{file_name}'"
+        return f'No files found matching "{file_name}"'
 
     if len(files) > 1:
-        output_parts = [f"Found {len(files)} files with name '{file_name}':"]
-        for f in files:
-            output_parts.append(f"  - {f['name']} (ID: {f['id']})")
-        output_parts.append("\nChecking the first file...")
+        output_parts = [f'Found {len(files)} files matching "{file_name}":']
+        for idx, f in enumerate(files, 1):
+            output_parts.append(f"  {idx}. {f['name']}")
+        output_parts.append("\nChecking the first match...")
         output_parts.append("")
     else:
         output_parts = []
@@ -1508,30 +1504,34 @@ async def check_drive_file_public_access(
 
     has_public_link = check_public_link_permission(permissions)
 
-    output_parts.extend(
-        [
-            f"File: {file_metadata['name']}",
-            f"ID: {file_id}",
-            f"Type: {file_metadata['mimeType']}",
-            f"Shared: {file_metadata.get('shared', False)}",
-            "",
-        ]
+    mime = file_metadata.get('mimeType', '')
+    friendly_type = mime.split(".")[-1].replace("-", " ").title() if "google-apps" in mime else mime.split("/")[-1].upper()
+    shared_status = "shared" if file_metadata.get('shared', False) else "not shared"
+
+    output_parts.append(
+        f'File "{file_metadata["name"]}" ({friendly_type}, {shared_status})'
     )
 
     if has_public_link:
         output_parts.extend(
             [
-                "✅ PUBLIC ACCESS ENABLED - This file can be inserted into Google Docs",
-                f"Use with insert_doc_image_url: {get_drive_image_url(file_id)}",
+                "",
+                "Public link sharing is enabled — can be inserted into Google Docs",
+                f"Image URL: {get_drive_image_url(file_id)}",
             ]
         )
     else:
         output_parts.extend(
             [
-                "❌ NO PUBLIC ACCESS - Cannot insert into Google Docs",
-                "Fix: Drive → Share → 'Anyone with the link' → 'Viewer'",
+                "",
+                "No public link sharing — cannot insert into Google Docs",
+                "Fix: Drive > Share > Anyone with the link > Viewer",
             ]
         )
+
+    link = file_metadata.get('webViewLink', '')
+    if link:
+        output_parts.extend(["", link])
 
     return "\n".join(output_parts)
 
@@ -1649,15 +1649,13 @@ async def update_drive_file(
     )
 
     # Build response message
-    output_parts = [
-        f"✅ Successfully updated file: {updated_file.get('name', current_file['name'])}"
-    ]
-    output_parts.append(f"   File ID: {file_id}")
+    updated_name = updated_file.get('name', current_file['name'])
+    link = updated_file.get('webViewLink', '')
 
     # Report what changed
     changes = []
     if name is not None and name != current_file.get("name"):
-        changes.append(f"   • Name: '{current_file.get('name')}' → '{name}'")
+        changes.append(f'Renamed "{current_file.get("name")}" to "{name}"')
     if description is not None:
         old_desc_value = current_file.get("description")
         new_desc_value = description
@@ -1669,23 +1667,25 @@ async def update_drive_file(
             new_desc_display = (
                 new_desc_value if new_desc_value not in (None, "") else "(empty)"
             )
-            changes.append(f"   • Description: {old_desc_display} → {new_desc_display}")
+            changes.append(f"Description: {old_desc_display} to {new_desc_display}")
     if add_parents:
-        changes.append(f"   • Added to folder(s): {add_parents}")
+        changes.append(f'Moved "{updated_name}" to folder "{add_parents}"')
     if remove_parents:
-        changes.append(f"   • Removed from folder(s): {remove_parents}")
+        changes.append(f'Removed "{updated_name}" from folder "{remove_parents}"')
     current_starred = current_file.get("starred")
     if starred is not None and starred != current_starred:
-        star_status = "starred" if starred else "unstarred"
-        changes.append(f"   • File {star_status}")
+        star_status = "Starred" if starred else "Unstarred"
+        changes.append(f'{star_status} "{updated_name}"')
     current_trashed = current_file.get("trashed")
     if trashed is not None and trashed != current_trashed:
-        trash_status = "moved to trash" if trashed else "restored from trash"
-        changes.append(f"   • File {trash_status}")
+        if trashed:
+            changes.append(f'Trashed "{updated_name}"')
+        else:
+            changes.append(f'Restored "{updated_name}" from trash')
     current_writers_can_share = current_file.get("writersCanShare")
     if writers_can_share is not None and writers_can_share != current_writers_can_share:
         share_status = "can" if writers_can_share else "cannot"
-        changes.append(f"   • Writers {share_status} share the file")
+        changes.append(f"Editors {share_status} now share the file")
     current_copy_requires_writer_permission = current_file.get(
         "copyRequiresWriterPermission"
     )
@@ -1696,19 +1696,20 @@ async def update_drive_file(
         copy_status = (
             "requires" if copy_requires_writer_permission else "doesn't require"
         )
-        changes.append(f"   • Copying {copy_status} writer permission")
+        changes.append(f"Copying now {copy_status} writer permission")
     if properties:
-        changes.append(f"   • Updated custom properties: {properties}")
+        changes.append(f"Updated custom properties")
 
     if changes:
-        output_parts.append("")
-        output_parts.append("Changes applied:")
-        output_parts.extend(changes)
+        output_parts = [f'Updated "{updated_name}":']
+        for change in changes:
+            output_parts.append(f"  - {change}")
+        if link:
+            output_parts.append(f"\n{link}")
     else:
-        output_parts.append("   (No changes were made)")
-
-    output_parts.append("")
-    output_parts.append(f"View file: {updated_file.get('webViewLink', '#')}")
+        output_parts = [f'No changes made to "{updated_name}"']
+        if link:
+            output_parts.append(link)
 
     return "\n".join(output_parts)
 
@@ -1749,24 +1750,24 @@ async def get_drive_shareable_link(
         .execute
     )
 
+    file_name = file_metadata.get('name', 'Unknown')
+    mime = file_metadata.get('mimeType', 'Unknown')
+    friendly_type = mime.split(".")[-1].replace("-", " ").title() if "google-apps" in mime else mime.split("/")[-1].upper()
+    shared_status = "shared" if file_metadata.get('shared', False) else "not shared"
+    view_link = file_metadata.get('webViewLink', 'N/A')
+
     output_parts = [
-        f"File: {file_metadata.get('name', 'Unknown')}",
-        f"ID: {file_id}",
-        f"Type: {file_metadata.get('mimeType', 'Unknown')}",
-        f"Shared: {file_metadata.get('shared', False)}",
-        "",
-        "Links:",
-        f"  View: {file_metadata.get('webViewLink', 'N/A')}",
+        f'File "{file_name}" ({friendly_type}, {shared_status}) — {view_link}',
     ]
 
     web_content_link = file_metadata.get("webContentLink")
     if web_content_link:
-        output_parts.append(f"  Download: {web_content_link}")
+        output_parts.append(f"Direct download — {web_content_link}")
 
     permissions = file_metadata.get("permissions", [])
     if permissions:
         output_parts.append("")
-        output_parts.append("Current permissions:")
+        output_parts.append("Permissions:")
         for perm in permissions:
             output_parts.append(f"  - {format_permission_info(perm)}")
 
@@ -1896,16 +1897,10 @@ async def manage_drive_access(
             service.permissions().create(**create_params).execute
         )
 
-        return "\n".join(
-            [
-                f"Successfully shared '{file_metadata.get('name', 'Unknown')}'",
-                "",
-                "Permission created:",
-                f"  - {format_permission_info(created_permission)}",
-                "",
-                f"View link: {file_metadata.get('webViewLink', 'N/A')}",
-            ]
-        )
+        perm_role = created_permission.get('role', effective_role)
+        perm_target = share_with or 'anyone'
+        link = file_metadata.get('webViewLink', '')
+        return f'Shared "{file_metadata.get("name", "Unknown")}" with {perm_target} ({perm_role}) — {link}'
 
     # --- grant_batch: share with multiple recipients ---
     if action == "grant_batch":
@@ -1993,20 +1988,13 @@ async def manage_drive_access(
                 results.append(f"  - {identifier}: Failed - {str(e)}")
                 failure_count += 1
 
+        link = file_metadata.get('webViewLink', '')
         output_parts = [
-            f"Batch share results for '{file_metadata.get('name', 'Unknown')}'",
-            "",
-            f"Summary: {success_count} succeeded, {failure_count} failed",
-            "",
-            "Results:",
+            f'Shared "{file_metadata.get("name", "Unknown")}" with {success_count} recipients ({failure_count} failed):',
         ]
         output_parts.extend(results)
-        output_parts.extend(
-            [
-                "",
-                f"View link: {file_metadata.get('webViewLink', 'N/A')}",
-            ]
-        )
+        if link:
+            output_parts.extend(["", link])
         return "\n".join(output_parts)
 
     # --- update: modify an existing permission ---
@@ -2058,14 +2046,9 @@ async def manage_drive_access(
             .execute
         )
 
-        return "\n".join(
-            [
-                f"Successfully updated permission on '{file_metadata.get('name', 'Unknown')}'",
-                "",
-                "Updated permission:",
-                f"  - {format_permission_info(updated_permission)}",
-            ]
-        )
+        perm_email = updated_permission.get('emailAddress', updated_permission.get('domain', 'anyone'))
+        perm_role = updated_permission.get('role', '')
+        return f'Updated permission on "{file_metadata.get("name", "Unknown")}" — {perm_email} is now {perm_role}'
 
     # --- revoke: remove an existing permission ---
     if action == "revoke":
@@ -2087,13 +2070,7 @@ async def manage_drive_access(
             .execute
         )
 
-        return "\n".join(
-            [
-                f"Successfully removed permission from '{file_metadata.get('name', 'Unknown')}'",
-                "",
-                f"Permission ID '{permission_id}' has been revoked.",
-            ]
-        )
+        return f'Revoked permission on "{file_metadata.get("name", "Unknown")}" (permission {permission_id})'
 
     # --- transfer_owner: transfer file ownership ---
     # action == "transfer_owner"
@@ -2127,15 +2104,14 @@ async def manage_drive_access(
         .execute
     )
 
+    file_name = file_metadata.get('name', 'Unknown')
+    prev_owners = ', '.join(current_owner_emails) or 'Unknown'
     output_parts = [
-        f"Successfully transferred ownership of '{file_metadata.get('name', 'Unknown')}'",
-        "",
-        f"New owner: {new_owner_email}",
-        f"Previous owner(s): {', '.join(current_owner_emails) or 'Unknown'}",
+        f'Transferred ownership of "{file_name}" to {new_owner_email} (was {prev_owners})',
     ]
     if move_to_new_owners_root:
-        output_parts.append(f"File moved to {new_owner_email}'s My Drive root.")
-    output_parts.extend(["", "Note: Previous owner now has editor access."])
+        output_parts.append(f"Moved to {new_owner_email}'s My Drive root.")
+    output_parts.append("Previous owner now has editor access.")
 
     return "\n".join(output_parts)
 
@@ -2197,19 +2173,9 @@ async def copy_drive_file(
         .execute
     )
 
-    output_parts = [
-        f"Successfully copied '{original_name}'",
-        "",
-        f"Original file ID: {file_id}",
-        f"New file ID: {copied_file.get('id', 'N/A')}",
-        f"New file name: {copied_file.get('name', 'Unknown')}",
-        f"File type: {copied_file.get('mimeType', 'Unknown')}",
-        f"Location: {parent_folder_id}",
-        "",
-        f"View copied file: {copied_file.get('webViewLink', 'N/A')}",
-    ]
-
-    return "\n".join(output_parts)
+    copied_name = copied_file.get('name', 'Unknown')
+    link = copied_file.get('webViewLink', '')
+    return f'Copied "{original_name}" as "{copied_name}" — {link}'
 
 
 @server.tool()
@@ -2275,7 +2241,7 @@ async def set_drive_file_permissions(
     file_id = resolved_file_id
     file_name = file_metadata.get("name", "Unknown")
 
-    output_parts = [f"Permission settings updated for '{file_name}'", ""]
+    output_parts = []
     changes_made = []
 
     # Handle file-level settings via files().update()
@@ -2373,11 +2339,13 @@ async def set_drive_file_permissions(
                 )
                 changes_made.append(f"  - Link sharing: enabled as '{link_sharing}'")
 
-    output_parts.append("Changes:")
+    link = file_metadata.get('webViewLink', '')
     if changes_made:
+        output_parts.append(f'Updated permissions for "{file_name}":')
         output_parts.extend(changes_made)
     else:
-        output_parts.append("  - No changes (already configured)")
-    output_parts.extend(["", f"View link: {file_metadata.get('webViewLink', 'N/A')}"])
+        output_parts.append(f'No changes made to "{file_name}" (already configured)')
+    if link:
+        output_parts.extend(["", link])
 
     return "\n".join(output_parts)

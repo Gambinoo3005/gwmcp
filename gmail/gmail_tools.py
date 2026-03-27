@@ -391,8 +391,10 @@ def _format_attachment_result(attached_count: int, requested_count: int) -> str:
     if requested_count <= 0:
         return ""
     if attached_count == requested_count:
-        return f" with {attached_count} attachment(s)"
-    return f" with {attached_count}/{requested_count} attachment(s) attached"
+        if attached_count == 1:
+            return " with 1 attachment"
+        return f" with {attached_count} attachments"
+    return f" with {attached_count}/{requested_count} attachments"
 
 
 def _extract_attachments(payload: dict) -> List[Dict[str, Any]]:
@@ -715,24 +717,16 @@ def _format_gmail_results_plain(
 ) -> str:
     """Format Gmail search results in clean, LLM-friendly plain text."""
     if not messages:
-        return f"No messages found for query: '{query}'"
+        return f'No messages found matching "{query}"'
 
     lines = [
-        f"Found {len(messages)} messages matching '{query}':",
-        "",
-        "📧 MESSAGES:",
+        f'Found {len(messages)} messages matching "{query}":',
     ]
 
     for i, msg in enumerate(messages, 1):
         # Handle potential null/undefined message objects
         if not msg or not isinstance(msg, dict):
-            lines.extend(
-                [
-                    f"  {i}. Message: Invalid message data",
-                    "     Error: Message object is null or malformed",
-                    "",
-                ]
-            )
+            lines.append(f"  {i}. (invalid message data)")
             continue
 
         # Handle potential null/undefined values from Gmail API
@@ -748,37 +742,21 @@ def _format_gmail_results_plain(
         if message_id != "unknown":
             message_url = _generate_gmail_web_url(message_id)
         else:
-            message_url = "N/A"
+            message_url = None
 
+        parts = [f"  {i}. Message: {message_id}"]
         if thread_id != "unknown":
-            thread_url = _generate_gmail_web_url(thread_id)
-        else:
-            thread_url = "N/A"
+            parts.append(f"Thread: {thread_id}")
+        if message_url:
+            parts.append(f"Link: {message_url}")
 
-        lines.extend(
-            [
-                f"  {i}. Message ID: {message_id}",
-                f"     Web Link: {message_url}",
-                f"     Thread ID: {thread_id}",
-                f"     Thread Link: {thread_url}",
-                "",
-            ]
-        )
-
-    lines.extend(
-        [
-            "💡 USAGE:",
-            "  • Pass the Message IDs **as a list** to get_gmail_messages_content_batch()",
-            "    e.g. get_gmail_messages_content_batch(message_ids=[...])",
-            "  • Pass the Thread IDs to get_gmail_thread_content() (single) or get_gmail_threads_content_batch() (batch)",
-        ]
-    )
+        lines.append(" — ".join(parts))
 
     # Add pagination info if there's a next page
     if next_page_token:
         lines.append("")
         lines.append(
-            f"📄 PAGINATION: To get the next page, call search_gmail_messages again with page_token='{next_page_token}'"
+            f"More results available — call search_gmail_messages with page_token=\"{next_page_token}\""
         )
 
     return "\n".join(lines)
@@ -828,7 +806,7 @@ async def search_gmail_messages(
     # Handle potential null response (but empty dict {} is valid)
     if response is None:
         logger.warning("[search_gmail_messages] Null response from Gmail API")
-        return f"No response received from Gmail API for query: '{query}'"
+        return f'No messages found matching "{query}"'
 
     messages = response.get("messages", [])
     # Additional safety check for null messages array
@@ -919,10 +897,14 @@ async def get_gmail_message_content(
     attachments = _extract_attachments(payload)
 
     content_lines = [
-        f"Subject: {subject}",
-        f"From:    {sender}",
-        f"Date:    {headers.get('Date', '(unknown date)')}",
+        f"From: {sender}",
+        f"To: {to}" if to else None,
+        f"Cc: {cc}" if cc else None,
+        f'Subject: "{subject}"',
+        f"Date: {headers.get('Date', '(unknown date)')}",
     ]
+    # Filter out None entries
+    content_lines = [line for line in content_lines if line is not None]
 
     if rfc822_msg_id:
         content_lines.append(f"Message-ID: {rfc822_msg_id}")
@@ -934,11 +916,6 @@ async def get_gmail_message_content(
     if references:
         content_lines.append(f"References: {references}")
 
-    if to:
-        content_lines.append(f"To:      {to}")
-    if cc:
-        content_lines.append(f"Cc:      {cc}")
-
     list_unsub = headers.get("List-Unsubscribe", "")
     precedence = headers.get("Precedence", "")
     list_id = headers.get("List-Id", "")
@@ -949,17 +926,15 @@ async def get_gmail_message_content(
     if list_id:
         content_lines.append(f"List-Id: {list_id}")
 
-    content_lines.append(f"\n--- BODY ---\n{body_data or '[No text/plain body found]'}")
+    content_lines.append(f"---\n{body_data or '[No body content]'}")
 
     # Add attachment information if present
     if attachments:
-        content_lines.append("\n--- ATTACHMENTS ---")
+        content_lines.append("\nAttachments:")
         for i, att in enumerate(attachments, 1):
             size_kb = att["size"] / 1024
             content_lines.append(
-                f"{i}. {att['filename']} ({att['mimeType']}, {size_kb:.1f} KB)\n"
-                f"   Attachment ID: {att['attachmentId']}\n"
-                f"   Use get_gmail_attachment_content(message_id='{message_id}', attachment_id='{att['attachmentId']}') to download"
+                f"  {i}. {att['filename']} ({att['mimeType']}, {size_kb:.1f} KB) — ID: {att['attachmentId']}"
             )
 
     return "\n".join(content_lines)
@@ -1091,11 +1066,11 @@ async def get_gmail_messages_content_batch(
             entry = results.get(mid, {"data": None, "error": "No result"})
 
             if entry["error"]:
-                output_messages.append(f"⚠️ Message {mid}: {entry['error']}\n")
+                output_messages.append(f"Error reading message {mid}: {entry['error']}")
             else:
                 message = entry["data"]
                 if not message:
-                    output_messages.append(f"⚠️ Message {mid}: No data returned\n")
+                    output_messages.append(f"Error reading message {mid}: No data returned")
                     continue
 
                 # Extract content based on format
@@ -1113,7 +1088,14 @@ async def get_gmail_messages_content_batch(
                     references = headers.get("References", "")
 
                     msg_output = (
-                        f"Message ID: {mid}\nSubject: {subject}\nFrom: {sender}\n"
+                        f"From: {sender}\n"
+                    )
+                    if to:
+                        msg_output += f"To: {to}\n"
+                    if cc:
+                        msg_output += f"Cc: {cc}\n"
+                    msg_output += (
+                        f'Subject: "{subject}"\n'
                         f"Date: {headers.get('Date', '(unknown date)')}\n"
                     )
                     if rfc822_msg_id:
@@ -1122,11 +1104,6 @@ async def get_gmail_messages_content_batch(
                         msg_output += f"In-Reply-To: {in_reply_to}\n"
                     if references:
                         msg_output += f"References: {references}\n"
-
-                    if to:
-                        msg_output += f"To: {to}\n"
-                    if cc:
-                        msg_output += f"Cc: {cc}\n"
 
                     list_unsub = headers.get("List-Unsubscribe", "")
                     precedence = headers.get("Precedence", "")
@@ -1138,7 +1115,7 @@ async def get_gmail_messages_content_batch(
                     if list_id:
                         msg_output += f"List-Id: {list_id}\n"
 
-                    msg_output += f"Web Link: {_generate_gmail_web_url(mid)}\n"
+                    msg_output += f"Link: {_generate_gmail_web_url(mid)}"
 
                     output_messages.append(msg_output)
                 else:
@@ -1162,7 +1139,14 @@ async def get_gmail_messages_content_batch(
                     references = headers.get("References", "")
 
                     msg_output = (
-                        f"Message ID: {mid}\nSubject: {subject}\nFrom: {sender}\n"
+                        f"From: {sender}\n"
+                    )
+                    if to:
+                        msg_output += f"To: {to}\n"
+                    if cc:
+                        msg_output += f"Cc: {cc}\n"
+                    msg_output += (
+                        f'Subject: "{subject}"\n'
                         f"Date: {headers.get('Date', '(unknown date)')}\n"
                     )
                     if rfc822_msg_id:
@@ -1171,11 +1155,6 @@ async def get_gmail_messages_content_batch(
                         msg_output += f"In-Reply-To: {in_reply_to}\n"
                     if references:
                         msg_output += f"References: {references}\n"
-
-                    if to:
-                        msg_output += f"To: {to}\n"
-                    if cc:
-                        msg_output += f"Cc: {cc}\n"
 
                     list_unsub = headers.get("List-Unsubscribe", "")
                     precedence = headers.get("Precedence", "")
@@ -1188,13 +1167,13 @@ async def get_gmail_messages_content_batch(
                         msg_output += f"List-Id: {list_id}\n"
 
                     msg_output += (
-                        f"Web Link: {_generate_gmail_web_url(mid)}\n\n{body_data}\n"
+                        f"---\n{body_data}"
                     )
 
                     output_messages.append(msg_output)
 
     # Combine all messages with separators
-    final_output = f"Retrieved {len(message_ids)} messages:\n\n"
+    final_output = f"Found {len(message_ids)} messages:\n\n"
     final_output += "\n---\n\n".join(output_messages)
 
     return final_output
@@ -1260,13 +1239,9 @@ async def get_gmail_attachment_content(
 
     if is_stateless_mode():
         result_lines = [
-            "Attachment downloaded successfully!",
-            f"Message ID: {message_id}",
-            f"Size: {size_kb:.1f} KB ({size_bytes} bytes)",
-            "\n⚠️ Stateless mode: File storage disabled.",
-            "\nBase64-encoded content (first 100 characters shown):",
-            f"{base64_data[:100]}...",
-            "\nNote: Attachment IDs are ephemeral. Always use IDs from the most recent message fetch.",
+            f"Downloaded attachment — {size_kb:.1f} KB",
+            f"\nStateless mode: file storage disabled.",
+            f"\nBase64 preview: {base64_data[:100]}...",
         ]
         logger.info(
             f"[get_gmail_attachment_content] Successfully downloaded {size_kb:.1f} KB attachment (stateless mode)"
@@ -1334,26 +1309,17 @@ async def get_gmail_attachment_content(
             base64_data=base64_data, filename=filename, mime_type=mime_type
         )
 
+        display_name = filename or "unknown"
         result_lines = [
-            "Attachment downloaded successfully!",
-            f"Message ID: {message_id}",
-            f"Filename: {filename or 'unknown'}",
-            f"Size: {size_kb:.1f} KB ({size_bytes} bytes)",
+            f'Downloaded attachment "{display_name}" — {size_kb:.1f} KB',
         ]
 
         if get_transport_mode() == "stdio":
-            result_lines.append(f"\n📎 Saved to: {result.path}")
-            result_lines.append(
-                "\nThe file has been saved to disk and can be accessed directly via the file path."
-            )
+            result_lines.append(f"Saved to: {result.path}")
         else:
             download_url = get_attachment_url(result.file_id)
-            result_lines.append(f"\n📎 Download URL: {download_url}")
-            result_lines.append("\nThe file will expire after 1 hour.")
-
-        result_lines.append(
-            "\nNote: Attachment IDs are ephemeral. Always use IDs from the most recent message fetch."
-        )
+            result_lines.append(f"Download URL: {download_url}")
+            result_lines.append("Link expires in 1 hour.")
 
         logger.info(
             f"[get_gmail_attachment_content] Successfully saved {size_kb:.1f} KB attachment to {result.path}"
@@ -1367,14 +1333,9 @@ async def get_gmail_attachment_content(
         )
         # Fallback to showing base64 preview
         result_lines = [
-            "Attachment downloaded successfully!",
-            f"Message ID: {message_id}",
-            f"Size: {size_kb:.1f} KB ({size_bytes} bytes)",
-            "\n⚠️ Failed to save attachment file. Showing preview instead.",
-            "\nBase64-encoded content (first 100 characters shown):",
-            f"{base64_data[:100]}...",
-            f"\nError: {str(e)}",
-            "\nNote: Attachment IDs are ephemeral. Always use IDs from the most recent message fetch.",
+            f"Downloaded attachment — {size_kb:.1f} KB",
+            f"\nFailed to save file: {str(e)}",
+            f"\nBase64 preview: {base64_data[:100]}...",
         ]
         return "\n".join(result_lines)
 
@@ -1573,12 +1534,10 @@ async def send_gmail_message(
     )
     message_id = sent_message.get("id")
 
-    if requested_attachment_count > 0:
-        attachment_info = _format_attachment_result(
-            attached_count, requested_attachment_count
-        )
-        return f"Email sent{attachment_info}! Message ID: {message_id}"
-    return f"Email sent! Message ID: {message_id}"
+    attachment_info = _format_attachment_result(
+        attached_count, requested_attachment_count
+    )
+    return f'Sent email to {to}{attachment_info} \u2014 Subject: "{subject}"'
 
 
 @server.tool()
@@ -1816,7 +1775,7 @@ async def draft_gmail_message(
     attachment_info = _format_attachment_result(
         attached_count, requested_attachment_count
     )
-    return f"Draft created{attachment_info}! Draft ID: {draft_id}"
+    return f'Created draft{attachment_info} \u2014 Subject: "{subject}"'
 
 
 def _format_thread_content(thread_data: dict, thread_id: str) -> str:
@@ -1832,7 +1791,7 @@ def _format_thread_content(thread_data: dict, thread_id: str) -> str:
     """
     messages = thread_data.get("messages", [])
     if not messages:
-        return f"No messages found in thread '{thread_id}'."
+        return f"No messages found in thread {thread_id}"
 
     # Extract thread subject from the first message
     first_message = messages[0]
@@ -1844,9 +1803,7 @@ def _format_thread_content(thread_data: dict, thread_id: str) -> str:
 
     # Build the thread content
     content_lines = [
-        f"Thread ID: {thread_id}",
-        f"Subject: {thread_subject}",
-        f"Messages: {len(messages)}",
+        f'Thread \u2014 Subject: "{thread_subject}" \u2014 {len(messages)} messages',
         "",
     ]
 
@@ -1874,13 +1831,9 @@ def _format_thread_content(thread_data: dict, thread_id: str) -> str:
         body_data = _format_body_content(text_body, html_body)
 
         # Add message to content
-        content_lines.extend(
-            [
-                f"=== Message {i} ===",
-                f"From: {sender}",
-                f"Date: {date}",
-            ]
-        )
+        content_lines.append(f"--- Message {i} ---")
+        content_lines.append(f"From: {sender}")
+        content_lines.append(f"Date: {date}")
 
         if rfc822_message_id:
             content_lines.append(f"Message-ID: {rfc822_message_id}")
@@ -1891,7 +1844,7 @@ def _format_thread_content(thread_data: dict, thread_id: str) -> str:
 
         # Only show subject if it's different from thread subject
         if subject != thread_subject:
-            content_lines.append(f"Subject: {subject}")
+            content_lines.append(f'Subject: "{subject}"')
 
         content_lines.extend(
             [
@@ -2027,17 +1980,17 @@ async def get_gmail_threads_content_batch(
             entry = results.get(tid, {"data": None, "error": "No result"})
 
             if entry["error"]:
-                output_threads.append(f"⚠️ Thread {tid}: {entry['error']}\n")
+                output_threads.append(f"Error reading thread {tid}: {entry['error']}")
             else:
                 thread = entry["data"]
                 if not thread:
-                    output_threads.append(f"⚠️ Thread {tid}: No data returned\n")
+                    output_threads.append(f"Error reading thread {tid}: No data returned")
                     continue
 
                 output_threads.append(_format_thread_content(thread, tid))
 
     # Combine all threads with separators
-    header = f"Retrieved {len(thread_ids)} threads:"
+    header = f"Found {len(thread_ids)} threads:"
     return header + "\n\n" + "\n---\n\n".join(output_threads)
 
 
@@ -2062,9 +2015,7 @@ async def list_gmail_labels(service, user_google_email: str) -> str:
     labels = response.get("labels", [])
 
     if not labels:
-        return "No labels found."
-
-    lines = [f"Found {len(labels)} labels:", ""]
+        return "No labels found"
 
     system_labels = []
     user_labels = []
@@ -2075,16 +2026,17 @@ async def list_gmail_labels(service, user_google_email: str) -> str:
         else:
             user_labels.append(label)
 
+    lines = [f"Found {len(labels)} labels:"]
+
     if system_labels:
-        lines.append("📂 SYSTEM LABELS:")
+        lines.append("\nSystem labels:")
         for label in system_labels:
-            lines.append(f"  • {label['name']} (ID: {label['id']})")
-        lines.append("")
+            lines.append(f"  {label['name']} (ID: {label['id']})")
 
     if user_labels:
-        lines.append("🏷️  USER LABELS:")
+        lines.append("\nUser labels:")
         for label in user_labels:
-            lines.append(f"  • {label['name']} (ID: {label['id']})")
+            lines.append(f"  {label['name']} (ID: {label['id']})")
 
     return "\n".join(lines)
 
@@ -2134,7 +2086,7 @@ async def manage_gmail_label(
         created_label = await asyncio.to_thread(
             service.users().labels().create(userId="me", body=label_object).execute
         )
-        return f"Label created successfully!\nName: {created_label['name']}\nID: {created_label['id']}"
+        return f'Created label "{created_label["name"]}"'
 
     elif action == "update":
         current_label = await asyncio.to_thread(
@@ -2154,7 +2106,7 @@ async def manage_gmail_label(
             .update(userId="me", id=label_id, body=label_object)
             .execute
         )
-        return f"Label updated successfully!\nName: {updated_label['name']}\nID: {updated_label['id']}"
+        return f'Updated label "{updated_label["name"]}"'
 
     elif action == "delete":
         label = await asyncio.to_thread(
@@ -2165,7 +2117,7 @@ async def manage_gmail_label(
         await asyncio.to_thread(
             service.users().labels().delete(userId="me", id=label_id).execute
         )
-        return f"Label '{label_name}' (ID: {label_id}) deleted successfully!"
+        return f'Deleted label "{label_name}"'
 
 
 @server.tool()
@@ -2190,60 +2142,51 @@ async def list_gmail_filters(service, user_google_email: str) -> str:
     filters = response.get("filter") or response.get("filters") or []
 
     if not filters:
-        return "No filters found."
+        return "No filters found"
 
-    lines = [f"Found {len(filters)} filters:", ""]
+    lines = [f"Found {len(filters)} filters:"]
 
     for filter_obj in filters:
         filter_id = filter_obj.get("id", "(no id)")
         criteria = filter_obj.get("criteria", {})
         action = filter_obj.get("action", {})
 
-        lines.append(f"🔹 Filter ID: {filter_id}")
-        lines.append("  Criteria:")
-
-        criteria_lines = []
+        # Build matches description
+        match_parts = []
         if criteria.get("from"):
-            criteria_lines.append(f"From: {criteria['from']}")
+            match_parts.append(f"from:{criteria['from']}")
         if criteria.get("to"):
-            criteria_lines.append(f"To: {criteria['to']}")
+            match_parts.append(f"to:{criteria['to']}")
         if criteria.get("subject"):
-            criteria_lines.append(f"Subject: {criteria['subject']}")
+            match_parts.append(f"subject:{criteria['subject']}")
         if criteria.get("query"):
-            criteria_lines.append(f"Query: {criteria['query']}")
+            match_parts.append(criteria["query"])
         if criteria.get("negatedQuery"):
-            criteria_lines.append(f"Exclude Query: {criteria['negatedQuery']}")
+            match_parts.append(f"-{{{criteria['negatedQuery']}}}")
         if criteria.get("hasAttachment"):
-            criteria_lines.append("Has attachment")
+            match_parts.append("has:attachment")
         if criteria.get("excludeChats"):
-            criteria_lines.append("Exclude chats")
+            match_parts.append("exclude:chats")
         if criteria.get("size"):
             comparison = criteria.get("sizeComparison", "")
-            criteria_lines.append(
-                f"Size {comparison or ''} {criteria['size']} bytes".strip()
-            )
+            match_parts.append(f"size {comparison or ''} {criteria['size']}".strip())
 
-        if not criteria_lines:
-            criteria_lines.append("(none)")
+        matches_str = " ".join(match_parts) if match_parts else "(no criteria)"
 
-        lines.extend([f"    • {line}" for line in criteria_lines])
-
-        lines.append("  Actions:")
-        action_lines = []
+        # Build actions description
+        action_parts = []
         if action.get("forward"):
-            action_lines.append(f"Forward to: {action['forward']}")
-        if action.get("removeLabelIds"):
-            action_lines.append(f"Remove labels: {', '.join(action['removeLabelIds'])}")
+            action_parts.append(f"forward to {action['forward']}")
         if action.get("addLabelIds"):
-            action_lines.append(f"Add labels: {', '.join(action['addLabelIds'])}")
+            action_parts.append(f"apply label: \"{', '.join(action['addLabelIds'])}\"")
+        if action.get("removeLabelIds"):
+            action_parts.append(f"remove label: \"{', '.join(action['removeLabelIds'])}\"")
 
-        if not action_lines:
-            action_lines.append("(none)")
+        actions_str = ", ".join(action_parts) if action_parts else "(no actions)"
 
-        lines.extend([f"    • {line}" for line in action_lines])
-        lines.append("")
+        lines.append(f"  {filter_id} \u2014 matches: {matches_str} \u2192 {actions_str}")
 
-    return "\n".join(lines).rstrip()
+    return "\n".join(lines)
 
 
 @server.tool()
@@ -2285,8 +2228,28 @@ async def manage_gmail_filter(
             .create(userId="me", body=filter_body)
             .execute
         )
-        fid = created_filter.get("id", "(unknown)")
-        return f"Filter created successfully!\nFilter ID: {fid}"
+        # Build a human-readable summary of the created filter
+        match_parts = []
+        if criteria.get("from"):
+            match_parts.append(f"from:{criteria['from']}")
+        if criteria.get("to"):
+            match_parts.append(f"to:{criteria['to']}")
+        if criteria.get("subject"):
+            match_parts.append(f"subject:{criteria['subject']}")
+        if criteria.get("query"):
+            match_parts.append(criteria["query"])
+        matches_str = " ".join(match_parts) if match_parts else "(no criteria)"
+
+        action_parts = []
+        if filter_action.get("addLabelIds"):
+            action_parts.append(f"apply label: \"{', '.join(filter_action['addLabelIds'])}\"")
+        if filter_action.get("removeLabelIds"):
+            action_parts.append(f"remove label: \"{', '.join(filter_action['removeLabelIds'])}\"")
+        if filter_action.get("forward"):
+            action_parts.append(f"forward to {filter_action['forward']}")
+        actions_str = ", ".join(action_parts) if action_parts else "(no actions)"
+
+        return f"Created filter \u2014 matches: {matches_str} \u2192 {actions_str}"
     elif action_lower == "delete":
         if not filter_id:
             raise ValueError("filter_id is required for delete action")
@@ -2303,12 +2266,19 @@ async def manage_gmail_filter(
         )
         criteria_info = filter_details.get("criteria", {})
         action_info = filter_details.get("action", {})
-        return (
-            "Filter deleted successfully!\n"
-            f"Filter ID: {filter_id}\n"
-            f"Criteria: {criteria_info or '(none)'}\n"
-            f"Action: {action_info or '(none)'}"
-        )
+
+        match_parts = []
+        if criteria_info.get("from"):
+            match_parts.append(f"from:{criteria_info['from']}")
+        if criteria_info.get("to"):
+            match_parts.append(f"to:{criteria_info['to']}")
+        if criteria_info.get("subject"):
+            match_parts.append(f"subject:{criteria_info['subject']}")
+        if criteria_info.get("query"):
+            match_parts.append(criteria_info["query"])
+        matches_str = " ".join(match_parts) if match_parts else "(no criteria)"
+
+        return f"Deleted filter \u2014 was matching: {matches_str}"
     else:
         raise ValueError(
             f"Invalid action '{action_lower}'. Must be 'create' or 'delete'."
@@ -2364,13 +2334,13 @@ async def modify_gmail_message_labels(
         service.users().messages().modify(userId="me", id=message_id, body=body).execute
     )
 
-    actions = []
+    action_parts = []
     if add_label_ids:
-        actions.append(f"Added labels: {', '.join(add_label_ids)}")
+        action_parts.append(f'added "{", ".join(add_label_ids)}"')
     if remove_label_ids:
-        actions.append(f"Removed labels: {', '.join(remove_label_ids)}")
+        action_parts.append(f'removed "{", ".join(remove_label_ids)}"')
 
-    return f"Message labels updated successfully!\nMessage ID: {message_id}\n{'; '.join(actions)}"
+    return f"Updated labels on message \u2014 {', '.join(action_parts)}"
 
 
 @server.tool()
@@ -2420,10 +2390,10 @@ async def batch_modify_gmail_message_labels(
         service.users().messages().batchModify(userId="me", body=body).execute
     )
 
-    actions = []
+    action_parts = []
     if add_label_ids:
-        actions.append(f"Added labels: {', '.join(add_label_ids)}")
+        action_parts.append(f'added "{", ".join(add_label_ids)}"')
     if remove_label_ids:
-        actions.append(f"Removed labels: {', '.join(remove_label_ids)}")
+        action_parts.append(f'removed "{", ".join(remove_label_ids)}"')
 
-    return f"Labels updated for {len(message_ids)} messages: {'; '.join(actions)}"
+    return f"Updated labels on {len(message_ids)} messages \u2014 {', '.join(action_parts)}"

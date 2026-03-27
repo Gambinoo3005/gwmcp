@@ -71,17 +71,18 @@ async def list_spreadsheets(
 
     files = files_response.get("files", [])
     if not files:
-        return f"No spreadsheets found for {user_google_email}."
+        return "No spreadsheets found."
 
-    spreadsheets_list = [
-        f'- "{file["name"]}" (ID: {file["id"]}) | Modified: {file.get("modifiedTime", "Unknown")} | Link: {file.get("webViewLink", "No link")}'
-        for file in files
-    ]
+    spreadsheets_list = []
+    for i, file in enumerate(files, 1):
+        mod_time = file.get("modifiedTime", "Unknown")
+        link = file.get("webViewLink", "")
+        entry = f'  {i}. {file["name"]} \u2014 Modified {mod_time}'
+        if link:
+            entry += f"\n     {link}"
+        spreadsheets_list.append(entry)
 
-    text_output = (
-        f"Successfully listed {len(files)} spreadsheets for {user_google_email}:\n"
-        + "\n".join(spreadsheets_list)
-    )
+    text_output = f"Found {len(files)} spreadsheets:\n" + "\n".join(spreadsheets_list)
 
     logger.info(
         f"Successfully listed {len(files)} spreadsheets for {user_google_email}."
@@ -126,25 +127,28 @@ async def get_spreadsheet_info(
     sheets = spreadsheet.get("sheets", [])
 
     sheet_titles = {}
+    sheet_name_list = []
     for sheet in sheets:
         sheet_props = sheet.get("properties", {})
         sid = sheet_props.get("sheetId")
+        s_title = sheet_props.get("title", f"Sheet {sid}")
         if sid is not None:
-            sheet_titles[sid] = sheet_props.get("title", f"Sheet {sid}")
+            sheet_titles[sid] = s_title
+        sheet_name_list.append(s_title)
 
     sheets_info = []
     for sheet in sheets:
         sheet_props = sheet.get("properties", {})
         sheet_name = sheet_props.get("title", "Unknown")
-        sheet_id = sheet_props.get("sheetId", "Unknown")
         grid_props = sheet_props.get("gridProperties", {})
         rows = grid_props.get("rowCount", "Unknown")
         cols = grid_props.get("columnCount", "Unknown")
         rules = sheet.get("conditionalFormats", []) or []
 
-        sheets_info.append(
-            f'  - "{sheet_name}" (ID: {sheet_id}) | Size: {rows}x{cols} | Conditional formats: {len(rules)}'
-        )
+        entry = f'  - "{sheet_name}" \u2014 {rows}x{cols}'
+        if rules:
+            entry += f", {len(rules)} conditional format(s)"
+        sheets_info.append(entry)
         if rules:
             sheets_info.append(
                 _format_conditional_rules_section(
@@ -152,11 +156,12 @@ async def get_spreadsheet_info(
                 )
             )
 
+    sheets_summary = ", ".join(sheet_name_list) if sheet_name_list else "none"
+    spreadsheet_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
     sheets_section = "\n".join(sheets_info) if sheets_info else "  No sheets found"
     text_output = "\n".join(
         [
-            f'Spreadsheet: "{title}" (ID: {spreadsheet_id}) | Locale: {locale}',
-            f"Sheets ({len(sheets)}):",
+            f'Spreadsheet "{title}" \u2014 {len(sheets)} sheets ({sheets_summary}) \u2014 {spreadsheet_url}',
             sheets_section,
         ]
     )
@@ -206,7 +211,7 @@ async def read_sheet_values(
 
     values = result.get("values", [])
     if not values:
-        return f"No data found in range '{range_name}' for {user_google_email}."
+        return f"No data found in range {range_name}."
 
     resolved_range = result.get("range", range_name)
     detailed_range = _a1_range_for_values(resolved_range, values) or resolved_range
@@ -243,10 +248,13 @@ async def read_sheet_values(
         padded_row = row + [""] * max(0, len(values[0]) - len(row)) if values else row
         formatted_rows.append(f"Row {i:2d}: {padded_row}")
 
+    total_cells = sum(len(row) for row in values)
+    data_block = "\n".join(formatted_rows[:50])
+    if len(values) > 50:
+        data_block += f"\n... and {len(values) - 50} more rows"
     text_output = (
-        f"Successfully read {len(values)} rows from range '{range_name}' in spreadsheet {spreadsheet_id} for {user_google_email}:\n"
-        + "\n".join(formatted_rows[:50])  # Limit to first 50 rows for readability
-        + (f"\n... and {len(values) - 50} more rows" if len(values) > 50 else "")
+        f'Sheet "{detailed_range}" ({range_name}, {total_cells} cells):\n'
+        + data_block
     )
 
     logger.info(f"Successfully read {len(values)} rows for {user_google_email}.")
@@ -321,7 +329,8 @@ async def modify_sheet_values(
         )
 
         cleared_range = result.get("clearedRange", range_name)
-        text_output = f"Successfully cleared range '{cleared_range}' in spreadsheet {spreadsheet_id} for {user_google_email}."
+        spreadsheet_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
+        text_output = f'Cleared range {cleared_range} \u2014 {spreadsheet_url}'
         logger.info(
             f"Successfully cleared range '{cleared_range}' for {user_google_email}."
         )
@@ -370,9 +379,9 @@ async def modify_sheet_values(
                     exc,
                 )
 
+        spreadsheet_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit"
         text_output = (
-            f"Successfully updated range '{range_name}' in spreadsheet {spreadsheet_id} for {user_google_email}. "
-            f"Updated: {updated_cells} cells, {updated_rows} rows, {updated_columns} columns."
+            f'Updated range {range_name} \u2014 {updated_cells} cells modified \u2014 {spreadsheet_url}'
         )
         text_output += detailed_errors_section
         logger.info(
@@ -694,10 +703,10 @@ async def format_sheet_range(
         font_size=font_size,
     )
 
-    # Build confirmation message with user email
+    # Build confirmation message
+    spreadsheet_url = f"https://docs.google.com/spreadsheets/d/{result['spreadsheet_id']}/edit"
     return (
-        f"Applied formatting to range '{result['range_name']}' in spreadsheet "
-        f"{result['spreadsheet_id']} for {user_google_email}: {result['summary']}."
+        f"Formatted range {result['range_name']} \u2014 {result['summary']} \u2014 {spreadsheet_url}"
     )
 
 
@@ -856,9 +865,7 @@ async def manage_conditional_formatting(
 
         return "\n".join(
             [
-                f"Added conditional format on '{range_name}' in spreadsheet "
-                f"{spreadsheet_id} for {user_google_email}: "
-                f"{rule_desc}{values_desc}; format: {format_desc}.",
+                f"Added conditional formatting to {range_name} \u2014 {rule_desc}{values_desc}, {format_desc}",
                 state_text,
             ]
         )
@@ -1038,10 +1045,7 @@ async def manage_conditional_formatting(
 
         return "\n".join(
             [
-                f"Updated conditional format at index {rule_index} on sheet "
-                f"'{sheet_title}' in spreadsheet {spreadsheet_id} "
-                f"for {user_google_email}: "
-                f"{rule_desc}{values_desc}; format: {format_desc}.",
+                f'Updated conditional formatting rule {rule_index} on "{sheet_title}" \u2014 {rule_desc}{values_desc}, {format_desc}',
                 state_text,
             ]
         )
@@ -1091,9 +1095,7 @@ async def manage_conditional_formatting(
 
         return "\n".join(
             [
-                f"Deleted conditional format at index {rule_index} on sheet "
-                f"'{target_sheet_name}' in spreadsheet {spreadsheet_id} "
-                f"for {user_google_email}.",
+                f'Deleted conditional formatting rule {rule_index} on "{target_sheet_name}"',
                 state_text,
             ]
         )
@@ -1144,10 +1146,7 @@ async def create_spreadsheet(
     spreadsheet_url = spreadsheet.get("spreadsheetUrl")
     locale = properties.get("locale", "Unknown")
 
-    text_output = (
-        f"Successfully created spreadsheet '{title}' for {user_google_email}. "
-        f"ID: {spreadsheet_id} | URL: {spreadsheet_url} | Locale: {locale}"
-    )
+    text_output = f'Created spreadsheet "{title}" \u2014 {spreadsheet_url}'
 
     logger.info(
         f"Successfully created spreadsheet for {user_google_email}. ID: {spreadsheet_id}"
@@ -1189,7 +1188,8 @@ async def create_sheet(
 
     sheet_id = response["replies"][0]["addSheet"]["properties"]["sheetId"]
 
-    text_output = f"Successfully created sheet '{sheet_name}' (ID: {sheet_id}) in spreadsheet {spreadsheet_id} for {user_google_email}."
+    spreadsheet_url = f"https://docs.google.com/spreadsheets/d/{spreadsheet_id}/edit#gid={sheet_id}"
+    text_output = f'Created sheet "{sheet_name}" in spreadsheet \u2014 {spreadsheet_url}'
 
     logger.info(
         f"Successfully created sheet for {user_google_email}. Sheet ID: {sheet_id}"

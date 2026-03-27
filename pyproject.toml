@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gwmcp"
-version = "1.15.4"
+version = "1.16.0"
 description = "Google Workspace MCP Server with guided setup and seamless auth. 114 tools for Gmail, Drive, Docs, Sheets, Calendar & more."
 readme = "README.md"
 keywords = [ "mcp", "google", "workspace", "llm", "ai", "claude", "model", "context", "protocol", "server"]

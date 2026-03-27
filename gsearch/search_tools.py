@@ -116,40 +116,19 @@ async def search_custom(
     # Extract search results
     items = result.get("items", [])
 
+    if not items:
+        logger.info(f"Search completed for {user_google_email}")
+        return f'No results found for "{q}"'
+
     # Format the response
-    confirmation_message = f"""Search Results for {user_google_email}:
-- Query: "{q}"
-- Search Engine ID: {cx}
-- Total Results: {total_results}
-- Search Time: {search_time:.3f} seconds
-- Results Returned: {len(items)} (showing {start} to {start + len(items) - 1})
+    confirmation_message = f'Found {total_results} results for "{q}":'
 
-"""
+    for i, item in enumerate(items, start):
+        title = item.get("title", "No title")
+        link = item.get("link", "No link")
+        snippet = item.get("snippet", "No description available").replace("\n", " ")
 
-    if items:
-        confirmation_message += "Results:\n"
-        for i, item in enumerate(items, start):
-            title = item.get("title", "No title")
-            link = item.get("link", "No link")
-            snippet = item.get("snippet", "No description available").replace("\n", " ")
-
-            confirmation_message += f"\n{i}. {title}\n"
-            confirmation_message += f"   URL: {link}\n"
-            confirmation_message += f"   Snippet: {snippet}\n"
-
-            # Add additional metadata if available
-            if "pagemap" in item:
-                pagemap = item["pagemap"]
-                if "metatags" in pagemap and pagemap["metatags"]:
-                    metatag = pagemap["metatags"][0]
-                    if "og:type" in metatag:
-                        confirmation_message += f"   Type: {metatag['og:type']}\n"
-                    if "article:published_time" in metatag:
-                        confirmation_message += (
-                            f"   Published: {metatag['article:published_time'][:10]}\n"
-                        )
-    else:
-        confirmation_message += "\nNo results found."
+        confirmation_message += f"\n  {i}. {title}\n     {link}\n     {snippet}"
 
     # Add information about pagination
     queries = result.get("queries", {})
@@ -159,7 +138,7 @@ async def search_custom(
             f"\n\nTo see more results, search again with start={next_start}"
         )
 
-    logger.info(f"Search completed successfully for {user_google_email}")
+    logger.info(f"Search completed for {user_google_email}")
     return confirmation_message
 
 
@@ -209,26 +188,20 @@ async def get_search_engine_info(service, user_google_email: str) -> str:
     context = result.get("context", {})
     title = context.get("title", "Unknown")
 
-    confirmation_message = f"""Search Engine Information for {user_google_email}:
-- Search Engine ID: {cx}
-- Title: {title}
-"""
-
-    # Add facet information if available
+    # Count refinements
+    refinements = []
     if "facets" in context:
-        confirmation_message += "\nAvailable Refinements:\n"
         for facet in context["facets"]:
             for item in facet:
                 label = item.get("label", "Unknown")
                 anchor = item.get("anchor", "Unknown")
-                confirmation_message += f"  - {label} (anchor: {anchor})\n"
+                refinements.append(f"  - {label} (anchor: {anchor})")
 
-    # Add search information
-    search_info = result.get("searchInformation", {})
-    if search_info:
-        total_results = search_info.get("totalResults", "Unknown")
-        confirmation_message += "\nSearch Statistics:\n"
-        confirmation_message += f"  - Total indexed results: {total_results}\n"
+    refinement_count = len(refinements)
+    confirmation_message = f'Search engine "{title}" \u2014 {refinement_count} refinements available'
 
-    logger.info(f"Search engine info retrieved successfully for {user_google_email}")
+    if refinements:
+        confirmation_message += "\n" + "\n".join(refinements)
+
+    logger.info(f"Search engine info retrieved for {user_google_email}")
     return confirmation_message

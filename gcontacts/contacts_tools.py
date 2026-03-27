@@ -33,6 +33,54 @@ CONTACT_GROUP_FIELDS = "name,groupType,memberCount,metadata"
 _search_cache_warmed_up: Dict[str, bool] = {}
 
 
+def _format_contact_summary(person: Dict[str, Any]) -> str:
+    """
+    Format a Person resource into a short one-line summary for lists.
+
+    Returns a string like: John Smith — john@email.com — +1 555-1234
+    """
+    parts: List[str] = []
+
+    # Name
+    names = person.get("names", [])
+    if names:
+        display_name = names[0].get("displayName", "")
+        if display_name:
+            parts.append(display_name)
+
+    # Primary email
+    emails = person.get("emailAddresses", [])
+    if emails:
+        primary_email = emails[0].get("value", "")
+        if primary_email:
+            parts.append(primary_email)
+
+    # Primary phone
+    phones = person.get("phoneNumbers", [])
+    if phones:
+        primary_phone = phones[0].get("value", "")
+        if primary_phone:
+            parts.append(primary_phone)
+
+    if not parts:
+        resource_name = person.get("resourceName", "Unknown")
+        contact_id = resource_name.replace("people/", "") if resource_name else "Unknown"
+        return contact_id
+
+    return " \u2014 ".join(parts)
+
+
+def _get_display_name(person: Dict[str, Any]) -> str:
+    """Extract display name from a Person resource, falling back to contact ID."""
+    names = person.get("names", [])
+    if names:
+        display_name = names[0].get("displayName", "")
+        if display_name:
+            return display_name
+    resource_name = person.get("resourceName", "Unknown")
+    return resource_name.replace("people/", "") if resource_name else "Unknown"
+
+
 def _format_contact(person: Dict[str, Any], detailed: bool = False) -> str:
     """
     Format a Person resource into a readable string.
@@ -44,32 +92,23 @@ def _format_contact(person: Dict[str, Any], detailed: bool = False) -> str:
     Returns:
         Formatted string representation of the contact.
     """
-    resource_name = person.get("resourceName", "Unknown")
-    contact_id = resource_name.replace("people/", "") if resource_name else "Unknown"
+    display_name = _get_display_name(person)
 
-    lines = [f"Contact ID: {contact_id}"]
-
-    # Names
-    names = person.get("names", [])
-    if names:
-        primary_name = names[0]
-        display_name = primary_name.get("displayName", "")
-        if display_name:
-            lines.append(f"Name: {display_name}")
+    lines = [f'Contact "{display_name}":']
 
     # Email addresses
     emails = person.get("emailAddresses", [])
     if emails:
         email_list = [e.get("value", "") for e in emails if e.get("value")]
         if email_list:
-            lines.append(f"Email: {', '.join(email_list)}")
+            lines.append(f"  Email: {', '.join(email_list)}")
 
     # Phone numbers
     phones = person.get("phoneNumbers", [])
     if phones:
         phone_list = [p.get("value", "") for p in phones if p.get("value")]
         if phone_list:
-            lines.append(f"Phone: {', '.join(phone_list)}")
+            lines.append(f"  Phone: {', '.join(phone_list)}")
 
     # Organizations
     orgs = person.get("organizations", [])
@@ -81,7 +120,7 @@ def _format_contact(person: Dict[str, Any], detailed: bool = False) -> str:
         if org.get("name"):
             org_parts.append(f"at {org['name']}")
         if org_parts:
-            lines.append(f"Organization: {' '.join(org_parts)}")
+            lines.append(f"  Company: {' '.join(org_parts)}")
 
     if detailed:
         # Addresses
@@ -90,7 +129,7 @@ def _format_contact(person: Dict[str, Any], detailed: bool = False) -> str:
             addr = addresses[0]
             formatted_addr = addr.get("formattedValue", "")
             if formatted_addr:
-                lines.append(f"Address: {formatted_addr}")
+                lines.append(f"  Address: {formatted_addr}")
 
         # Birthday
         birthdays = person.get("birthdays", [])
@@ -100,14 +139,14 @@ def _format_contact(person: Dict[str, Any], detailed: bool = False) -> str:
                 bday_str = f"{bday.get('month', '?')}/{bday.get('day', '?')}"
                 if bday.get("year"):
                     bday_str = f"{bday.get('year')}/{bday_str}"
-                lines.append(f"Birthday: {bday_str}")
+                lines.append(f"  Birthday: {bday_str}")
 
         # URLs
         urls = person.get("urls", [])
         if urls:
             url_list = [u.get("value", "") for u in urls if u.get("value")]
             if url_list:
-                lines.append(f"URLs: {', '.join(url_list)}")
+                lines.append(f"  URLs: {', '.join(url_list)}")
 
         # Biography/Notes
         bios = person.get("biographies", [])
@@ -117,16 +156,7 @@ def _format_contact(person: Dict[str, Any], detailed: bool = False) -> str:
                 # Truncate long bios
                 if len(bio) > 200:
                     bio = bio[:200] + "..."
-                lines.append(f"Notes: {bio}")
-
-        # Metadata
-        metadata = person.get("metadata", {})
-        if metadata:
-            sources = metadata.get("sources", [])
-            if sources:
-                source_types = [s.get("type", "") for s in sources]
-                if source_types:
-                    lines.append(f"Sources: {', '.join(source_types)}")
+                lines.append(f"  Notes: {bio}")
 
     return "\n".join(lines)
 
@@ -273,20 +303,18 @@ async def list_contacts(
     total_people = result.get("totalPeople", len(connections))
 
     if not connections:
-        return f"No contacts found for {user_google_email}."
+        return "No contacts found"
 
-    response = (
-        f"Contacts for {user_google_email} ({len(connections)} of {total_people}):\n\n"
-    )
+    lines = [f"Found {total_people} contacts:"]
 
-    for person in connections:
-        response += _format_contact(person) + "\n\n"
+    for idx, person in enumerate(connections, 1):
+        lines.append(f"  {idx}. {_format_contact_summary(person)}")
 
     if next_page_token:
-        response += f"Next page token: {next_page_token}"
+        lines.append(f"\nNext page token: {next_page_token}")
 
-    logger.info(f"Found {len(connections)} contacts for {user_google_email}")
-    return response
+    logger.info(f"Found {len(connections)} contacts")
+    return "\n".join(lines)
 
 
 @server.tool()
@@ -323,10 +351,9 @@ async def get_contact(
         .execute
     )
 
-    response = f"Contact Details for {user_google_email}:\n\n"
-    response += _format_contact(person, detailed=True)
+    response = _format_contact(person, detailed=True)
 
-    logger.info(f"Retrieved contact {resource_name} for {user_google_email}")
+    logger.info(f"Retrieved contact {resource_name}")
     return response
 
 
@@ -374,18 +401,16 @@ async def search_contacts(
     results = result.get("results", [])
 
     if not results:
-        return f"No contacts found matching '{query}' for {user_google_email}."
+        return f'No contacts found matching "{query}"'
 
-    response = f"Search Results for '{query}' ({len(results)} found):\n\n"
+    lines = [f'Found {len(results)} contacts matching "{query}":']
 
-    for item in results:
+    for idx, item in enumerate(results, 1):
         person = item.get("person", {})
-        response += _format_contact(person) + "\n\n"
+        lines.append(f"  {idx}. {_format_contact_summary(person)}")
 
-    logger.info(
-        f"Found {len(results)} contacts matching '{query}' for {user_google_email}"
-    )
-    return response
+    logger.info(f"Found {len(results)} contacts matching '{query}'")
+    return "\n".join(lines)
 
 
 @server.tool()
@@ -455,11 +480,16 @@ async def manage_contact(
             .execute
         )
 
-        response = f"Contact Created for {user_google_email}:\n\n"
-        response += _format_contact(result, detailed=True)
+        display_name = _get_display_name(result)
+        emails = result.get("emailAddresses", [])
+        primary_email = emails[0].get("value", "") if emails else ""
+        if primary_email:
+            response = f'Created contact "{display_name}" \u2014 {primary_email}'
+        else:
+            response = f'Created contact "{display_name}"'
 
         created_id = result.get("resourceName", "").replace("people/", "")
-        logger.info(f"Created contact {created_id} for {user_google_email}")
+        logger.info(f"Created contact {created_id}")
         return response
 
     # update and delete both require contact_id
@@ -526,10 +556,10 @@ async def manage_contact(
             .execute
         )
 
-        response = f"Contact Updated for {user_google_email}:\n\n"
-        response += _format_contact(result, detailed=True)
+        display_name = _get_display_name(result)
+        response = f'Updated contact "{display_name}"'
 
-        logger.info(f"Updated contact {resource_name} for {user_google_email}")
+        logger.info(f"Updated contact {resource_name}")
         return response
 
     # action == "delete"
@@ -537,8 +567,8 @@ async def manage_contact(
         service.people().deleteContact(resourceName=resource_name).execute
     )
 
-    response = f"Contact {contact_id} has been deleted for {user_google_email}."
-    logger.info(f"Deleted contact {resource_name} for {user_google_email}")
+    response = f'Deleted contact "{contact_id}"'
+    logger.info(f"Deleted contact {resource_name}")
     return response
 
 
@@ -587,27 +617,20 @@ async def list_contact_groups(
     next_page_token = result.get("nextPageToken")
 
     if not groups:
-        return f"No contact groups found for {user_google_email}."
+        return "No contact groups found"
 
-    response = f"Contact Groups for {user_google_email}:\n\n"
+    lines = [f"Found {len(groups)} contact groups:"]
 
-    for group in groups:
-        resource_name = group.get("resourceName", "")
-        group_id = resource_name.replace("contactGroups/", "")
+    for idx, group in enumerate(groups, 1):
         name = group.get("name", "Unnamed")
-        group_type = group.get("groupType", "USER_CONTACT_GROUP")
         member_count = group.get("memberCount", 0)
-
-        response += f"- {name}\n"
-        response += f"  ID: {group_id}\n"
-        response += f"  Type: {group_type}\n"
-        response += f"  Members: {member_count}\n\n"
+        lines.append(f"  {idx}. {name} ({member_count} members)")
 
     if next_page_token:
-        response += f"Next page token: {next_page_token}"
+        lines.append(f"\nNext page token: {next_page_token}")
 
-    logger.info(f"Found {len(groups)} contact groups for {user_google_email}")
-    return response
+    logger.info(f"Found {len(groups)} contact groups")
+    return "\n".join(lines)
 
 
 @server.tool()
@@ -659,20 +682,18 @@ async def get_contact_group(
     member_count = result.get("memberCount", 0)
     member_resource_names = result.get("memberResourceNames", [])
 
-    response = f"Contact Group Details for {user_google_email}:\n\n"
-    response += f"Name: {name}\n"
-    response += f"ID: {group_id}\n"
-    response += f"Type: {group_type}\n"
-    response += f"Total Members: {member_count}\n"
+    lines = [f'Contact group "{name}":']
+    lines.append(f"  Members: {member_count}")
+    lines.append(f"  Type: {group_type}")
 
     if member_resource_names:
-        response += f"\nMembers ({len(member_resource_names)} shown):\n"
+        lines.append(f"\n  Member IDs ({len(member_resource_names)} shown):")
         for member in member_resource_names:
             contact_id = member.replace("people/", "")
-            response += f"  - {contact_id}\n"
+            lines.append(f"    - {contact_id}")
 
-    logger.info(f"Retrieved contact group {resource_name} for {user_google_email}")
-    return response
+    logger.info(f"Retrieved contact group {resource_name}")
+    return "\n".join(lines)
 
 
 # =============================================================================
@@ -752,17 +773,14 @@ async def manage_contacts_batch(
 
         created_people = result.get("createdPeople", [])
 
-        response = f"Batch Create Results for {user_google_email}:\n\n"
-        response += f"Created {len(created_people)} contacts:\n\n"
+        lines = [f"Created {len(created_people)} contacts:"]
 
-        for item in created_people:
+        for idx, item in enumerate(created_people, 1):
             person = item.get("person", {})
-            response += _format_contact(person) + "\n\n"
+            lines.append(f"  {idx}. {_format_contact_summary(person)}")
 
-        logger.info(
-            f"Batch created {len(created_people)} contacts for {user_google_email}"
-        )
-        return response
+        logger.info(f"Batch created {len(created_people)} contacts")
+        return "\n".join(lines)
 
     if action == "update":
         if not updates:
@@ -849,17 +867,14 @@ async def manage_contacts_batch(
 
         update_results = result.get("updateResult", {})
 
-        response = f"Batch Update Results for {user_google_email}:\n\n"
-        response += f"Updated {len(update_results)} contacts:\n\n"
+        lines = [f"Updated {len(update_results)} contacts:"]
 
-        for rname, update_result in update_results.items():
+        for idx, (rname, update_result) in enumerate(update_results.items(), 1):
             person = update_result.get("person", {})
-            response += _format_contact(person) + "\n\n"
+            lines.append(f"  {idx}. {_format_contact_summary(person)}")
 
-        logger.info(
-            f"Batch updated {len(update_results)} contacts for {user_google_email}"
-        )
-        return response
+        logger.info(f"Batch updated {len(update_results)} contacts")
+        return "\n".join(lines)
 
     # action == "delete"
     if not contact_ids:
@@ -881,8 +896,8 @@ async def manage_contacts_batch(
         service.people().batchDeleteContacts(body=batch_body).execute
     )
 
-    response = f"Batch deleted {len(contact_ids)} contacts for {user_google_email}."
-    logger.info(f"Batch deleted {len(contact_ids)} contacts for {user_google_email}")
+    response = f"Deleted {len(contact_ids)} contacts"
+    logger.info(f"Batch deleted {len(contact_ids)} contacts")
     return response
 
 
@@ -938,16 +953,11 @@ async def manage_contact_group(
             service.contactGroups().create(body=body).execute
         )
 
-        resource_name = result.get("resourceName", "")
-        created_group_id = resource_name.replace("contactGroups/", "")
         created_name = result.get("name", name)
 
-        response = f"Contact Group Created for {user_google_email}:\n\n"
-        response += f"Name: {created_name}\n"
-        response += f"ID: {created_group_id}\n"
-        response += f"Type: {result.get('groupType', 'USER_CONTACT_GROUP')}\n"
+        response = f'Created contact group "{created_name}"'
 
-        logger.info(f"Created contact group '{name}' for {user_google_email}")
+        logger.info(f"Created contact group '{name}'")
         return response
 
     # All other actions require group_id
@@ -974,11 +984,9 @@ async def manage_contact_group(
 
         updated_name = result.get("name", name)
 
-        response = f"Contact Group Updated for {user_google_email}:\n\n"
-        response += f"Name: {updated_name}\n"
-        response += f"ID: {group_id}\n"
+        response = f'Updated contact group "{updated_name}"'
 
-        logger.info(f"Updated contact group {resource_name} for {user_google_email}")
+        logger.info(f"Updated contact group {resource_name}")
         return response
 
     if action == "delete":
@@ -988,13 +996,13 @@ async def manage_contact_group(
             .execute
         )
 
-        response = f"Contact group {group_id} has been deleted for {user_google_email}."
+        response = f'Deleted contact group "{group_id}"'
         if delete_contacts:
-            response += " Contacts in the group were also deleted."
+            response += " (contacts in the group were also deleted)"
         else:
-            response += " Contacts in the group were preserved."
+            response += " (contacts in the group were preserved)"
 
-        logger.info(f"Deleted contact group {resource_name} for {user_google_email}")
+        logger.info(f"Deleted contact group {resource_name}")
         return response
 
     # action == "modify_members"
@@ -1033,20 +1041,19 @@ async def manage_contact_group(
     not_found = result.get("notFoundResourceNames", [])
     cannot_remove = result.get("canNotRemoveLastContactGroupResourceNames", [])
 
-    response = f"Contact Group Members Modified for {user_google_email}:\n\n"
-    response += f"Group: {group_id}\n"
+    parts = [f'Updated members of group "{group_id}":']
 
     if add_contact_ids:
-        response += f"Added: {len(add_contact_ids)} contacts\n"
+        parts.append(f"  Added {len(add_contact_ids)} contacts")
     if remove_contact_ids:
-        response += f"Removed: {len(remove_contact_ids)} contacts\n"
+        parts.append(f"  Removed {len(remove_contact_ids)} contacts")
 
     if not_found:
-        response += f"\nNot found: {', '.join(not_found)}\n"
+        not_found_ids = [n.replace("people/", "") for n in not_found]
+        parts.append(f"  Not found: {', '.join(not_found_ids)}")
     if cannot_remove:
-        response += f"\nCannot remove (last group): {', '.join(cannot_remove)}\n"
+        cant_ids = [c.replace("people/", "") for c in cannot_remove]
+        parts.append(f"  Cannot remove (last group): {', '.join(cant_ids)}")
 
-    logger.info(
-        f"Modified contact group members for {resource_name} for {user_google_email}"
-    )
-    return response
+    logger.info(f"Modified contact group members for {resource_name}")
+    return "\n".join(parts)

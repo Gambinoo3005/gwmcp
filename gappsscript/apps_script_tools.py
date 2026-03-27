@@ -47,18 +47,17 @@ async def _list_script_projects_impl(
     files = response.get("files", [])
 
     if not files:
-        return "No Apps Script projects found."
+        return "No projects found"
 
     output = [f"Found {len(files)} Apps Script projects:"]
-    for file in files:
+    for i, file in enumerate(files, 1):
         title = file.get("name", "Untitled")
-        script_id = file.get("id", "Unknown ID")
-        create_time = file.get("createdTime", "Unknown")
         update_time = file.get("modifiedTime", "Unknown")
+        script_id = file.get("id", "Unknown ID")
+        link = f"https://script.google.com/d/{script_id}/edit"
 
-        output.append(
-            f"- {title} (ID: {script_id}) Created: {create_time} Modified: {update_time}"
-        )
+        output.append(f"  {i}. {title} \u2014 last modified {update_time}")
+        output.append(f"     {link}")
 
     if "nextPageToken" in response:
         output.append(f"\nNext page token: {response['nextPageToken']}")
@@ -112,29 +111,19 @@ async def _get_script_project_impl(
     )
 
     title = project.get("title", "Untitled")
-    project_script_id = project.get("scriptId", "Unknown")
-    creator = project.get("creator", {}).get("email", "Unknown")
-    create_time = project.get("createTime", "Unknown")
-    update_time = project.get("updateTime", "Unknown")
-
-    output = [
-        f"Project: {title} (ID: {project_script_id})",
-        f"Creator: {creator}",
-        f"Created: {create_time}",
-        f"Modified: {update_time}",
-        "",
-        "Files:",
-    ]
 
     files = content.get("files", [])
+
+    output = [f'Project "{title}" \u2014 {len(files)} files:']
+
     for i, file in enumerate(files, 1):
         file_name = file.get("name", "Untitled")
         file_type = file.get("type", "Unknown")
         source = file.get("source", "")
 
-        output.append(f"{i}. {file_name} ({file_type})")
+        output.append(f"  {i}. {file_name} ({file_type})")
         if source:
-            output.append(f"   {source[:200]}{'...' if len(source) > 200 else ''}")
+            output.append(f"     {source[:200]}{'...' if len(source) > 200 else ''}")
             output.append("")
 
     logger.info(f"[get_script_project] Retrieved project {script_id}")
@@ -188,12 +177,12 @@ async def _get_script_content_impl(
             break
 
     if not target_file:
-        return f"File '{file_name}' not found in project {script_id}"
+        return f"File \"{file_name}\" not found in project"
 
     source = target_file.get("source", "")
     file_type = target_file.get("type", "Unknown")
 
-    output = [f"File: {file_name} ({file_type})", "", source]
+    output = [f"File \"{file_name}\" ({file_type}):", "", source]
 
     logger.info(f"[get_script_content] Retrieved file {file_name} from {script_id}")
     return "\n".join(output)
@@ -246,14 +235,8 @@ async def _create_script_project_impl(
     script_id = project.get("scriptId", "Unknown")
     edit_url = f"https://script.google.com/d/{script_id}/edit"
 
-    output = [
-        f"Created Apps Script project: {title}",
-        f"Script ID: {script_id}",
-        f"Edit URL: {edit_url}",
-    ]
-
     logger.info(f"[create_script_project] Created project {script_id}")
-    return "\n".join(output)
+    return f'Created project "{title}" \u2014 {edit_url}'
 
 
 @server.tool()
@@ -299,12 +282,13 @@ async def _update_script_content_impl(
         service.projects().updateContent(scriptId=script_id, body=request_body).execute
     )
 
-    output = [f"Updated script project: {script_id}", "", "Modified files:"]
+    updated_files = updated_content.get("files", [])
+    output = [f"Updated {len(updated_files)} files in project:"]
 
-    for file in updated_content.get("files", []):
+    for i, file in enumerate(updated_files, 1):
         file_name = file.get("name", "Untitled")
         file_type = file.get("type", "Unknown")
-        output.append(f"- {file_name} ({file_type})")
+        output.append(f"  {i}. {file_name} ({file_type})")
 
     logger.info(f"[update_script_content] Updated {len(files)} files in {script_id}")
     return "\n".join(output)
@@ -362,23 +346,16 @@ async def _run_script_function_impl(
         if "error" in response:
             error_details = response["error"]
             error_message = error_details.get("message", "Unknown error")
-            return (
-                f"Execution failed\nFunction: {function_name}\nError: {error_message}"
-            )
+            return f'Function "{function_name}" failed \u2014 {error_message}'
 
         result = response.get("response", {}).get("result")
-        output = [
-            "Execution successful",
-            f"Function: {function_name}",
-            f"Result: {result}",
-        ]
 
-        logger.info(f"[run_script_function] Successfully executed {function_name}")
-        return "\n".join(output)
+        logger.info(f"[run_script_function] Executed {function_name}")
+        return f'Ran function "{function_name}" \u2014 returned: {result}'
 
     except Exception as e:
         logger.error(f"[run_script_function] Execution error: {str(e)}")
-        return f"Execution failed\nFunction: {function_name}\nError: {str(e)}"
+        return f'Function "{function_name}" failed \u2014 {str(e)}'
 
 
 @server.tool()
@@ -452,15 +429,8 @@ async def _create_deployment_impl(
 
     deployment_id = deployment.get("deploymentId", "Unknown")
 
-    output = [
-        f"Created deployment for script: {script_id}",
-        f"Deployment ID: {deployment_id}",
-        f"Version: {version_number}",
-        f"Description: {description}",
-    ]
-
     logger.info(f"[create_deployment] Created deployment {deployment_id}")
-    return "\n".join(output)
+    return f'Created deployment v{version_number} \u2014 "{description}"'
 
 
 @server.tool()
@@ -532,18 +502,20 @@ async def _list_deployments_impl(
     deployments = response.get("deployments", [])
 
     if not deployments:
-        return f"No deployments found for script: {script_id}"
+        return "No deployments found"
 
-    output = [f"Deployments for script: {script_id}", ""]
+    output = [f"Found {len(deployments)} deployments:"]
 
     for i, deployment in enumerate(deployments, 1):
-        deployment_id = deployment.get("deploymentId", "Unknown")
         description = deployment.get("description", "No description")
         update_time = deployment.get("updateTime", "Unknown")
 
-        output.append(f"{i}. {description} ({deployment_id})")
-        output.append(f"   Updated: {update_time}")
-        output.append("")
+        # Try to get deployment config for type info
+        config = deployment.get("deploymentConfig", {})
+        version_number = config.get("versionNumber", "")
+        version_label = f"v{version_number}" if version_number else "HEAD"
+
+        output.append(f"  {i}. {version_label} \u2014 \"{description}\" \u2014 {update_time}")
 
     logger.info(f"[list_deployments] Found {len(deployments)} deployments")
     return "\n".join(output)
@@ -594,14 +566,10 @@ async def _update_deployment_impl(
         .execute
     )
 
-    output = [
-        f"Updated deployment: {deployment_id}",
-        f"Script: {script_id}",
-        f"Description: {deployment.get('description', 'No description')}",
-    ]
+    desc = deployment.get('description', 'No description')
 
     logger.info(f"[update_deployment] Updated deployment {deployment_id}")
-    return "\n".join(output)
+    return f'Updated deployment \u2014 "{desc}"'
 
 
 async def _delete_deployment_impl(
@@ -622,10 +590,8 @@ async def _delete_deployment_impl(
         .execute
     )
 
-    output = f"Deleted deployment: {deployment_id} from script: {script_id}"
-
     logger.info(f"[delete_deployment] Deleted deployment {deployment_id}")
-    return output
+    return f"Deleted deployment \"{deployment_id}\""
 
 
 async def _list_script_processes_impl(
@@ -650,9 +616,9 @@ async def _list_script_processes_impl(
     processes = response.get("processes", [])
 
     if not processes:
-        return "No recent script executions found."
+        return "No recent executions found"
 
-    output = ["Recent script executions:", ""]
+    output = [f"Found {len(processes)} recent executions:"]
 
     for i, process in enumerate(processes, 1):
         function_name = process.get("functionName", "Unknown")
@@ -660,11 +626,7 @@ async def _list_script_processes_impl(
         start_time = process.get("startTime", "Unknown")
         duration = process.get("duration", "Unknown")
 
-        output.append(f"{i}. {function_name}")
-        output.append(f"   Status: {process_status}")
-        output.append(f"   Started: {start_time}")
-        output.append(f"   Duration: {duration}")
-        output.append("")
+        output.append(f"  {i}. \"{function_name}\" \u2014 {process_status} \u2014 {start_time} ({duration})")
 
     logger.info(f"[list_script_processes] Found {len(processes)} processes")
     return "\n".join(output)
@@ -715,7 +677,7 @@ async def _delete_script_project_impl(
     await asyncio.to_thread(service.files().delete(fileId=script_id).execute)
 
     logger.info(f"[delete_script_project] Deleted script {script_id}")
-    return f"Deleted Apps Script project: {script_id}"
+    return f'Deleted project "{script_id}"'
 
 
 @server.tool()
@@ -762,18 +724,16 @@ async def _list_versions_impl(
     versions = response.get("versions", [])
 
     if not versions:
-        return f"No versions found for script: {script_id}"
+        return "No versions found"
 
-    output = [f"Versions for script: {script_id}", ""]
+    output = [f"Found {len(versions)} versions:"]
 
-    for version in versions:
+    for i, version in enumerate(versions, 1):
         version_number = version.get("versionNumber", "Unknown")
         description = version.get("description", "No description")
         create_time = version.get("createTime", "Unknown")
 
-        output.append(f"Version {version_number}: {description}")
-        output.append(f"   Created: {create_time}")
-        output.append("")
+        output.append(f'  {i}. v{version_number} \u2014 "{description}" \u2014 {create_time}')
 
     logger.info(f"[list_versions] Found {len(versions)} versions")
     return "\n".join(output)
@@ -827,14 +787,10 @@ async def _create_version_impl(
     version_number = version.get("versionNumber", "Unknown")
     create_time = version.get("createTime", "Unknown")
 
-    output = [
-        f"Created version {version_number} for script: {script_id}",
-        f"Description: {description or 'No description'}",
-        f"Created: {create_time}",
-    ]
+    desc = description or "No description"
 
     logger.info(f"[create_version] Created version {version_number}")
-    return "\n".join(output)
+    return f'Created v{version_number} \u2014 "{desc}" \u2014 {create_time}'
 
 
 @server.tool()
@@ -888,14 +844,8 @@ async def _get_version_impl(
     description = version.get("description", "No description")
     create_time = version.get("createTime", "Unknown")
 
-    output = [
-        f"Version {ver_num} of script: {script_id}",
-        f"Description: {description}",
-        f"Created: {create_time}",
-    ]
-
     logger.info(f"[get_version] Retrieved version {ver_num}")
-    return "\n".join(output)
+    return f'v{ver_num} \u2014 "{description}" \u2014 {create_time}'
 
 
 @server.tool()
@@ -949,47 +899,40 @@ async def _get_script_metrics_impl(
         service.projects().getMetrics(**request_params).execute
     )
 
-    output = [
-        f"Metrics for script: {script_id}",
-        f"Granularity: {metrics_granularity}",
-        "",
-    ]
+    output = [f"Metrics ({metrics_granularity.lower()}):"]
 
     # Active users
     active_users = response.get("activeUsers", [])
     if active_users:
-        output.append("Active Users:")
+        output.append("  Active Users:")
         for metric in active_users:
             start_time = metric.get("startTime", "Unknown")
             end_time = metric.get("endTime", "Unknown")
             value = metric.get("value", "0")
-            output.append(f"  {start_time} to {end_time}: {value} users")
-        output.append("")
+            output.append(f"    {start_time} to {end_time} \u2014 {value} users")
 
     # Total executions
     total_executions = response.get("totalExecutions", [])
     if total_executions:
-        output.append("Total Executions:")
+        output.append("  Total Executions:")
         for metric in total_executions:
             start_time = metric.get("startTime", "Unknown")
             end_time = metric.get("endTime", "Unknown")
             value = metric.get("value", "0")
-            output.append(f"  {start_time} to {end_time}: {value} executions")
-        output.append("")
+            output.append(f"    {start_time} to {end_time} \u2014 {value} executions")
 
     # Failed executions
     failed_executions = response.get("failedExecutions", [])
     if failed_executions:
-        output.append("Failed Executions:")
+        output.append("  Failed Executions:")
         for metric in failed_executions:
             start_time = metric.get("startTime", "Unknown")
             end_time = metric.get("endTime", "Unknown")
             value = metric.get("value", "0")
-            output.append(f"  {start_time} to {end_time}: {value} failures")
-        output.append("")
+            output.append(f"    {start_time} to {end_time} \u2014 {value} failures")
 
     if not active_users and not total_executions and not failed_executions:
-        output.append("No metrics data available for this script.")
+        output.append("  No metrics data available")
 
     logger.info(f"[get_script_metrics] Retrieved metrics for {script_id}")
     return "\n".join(output)

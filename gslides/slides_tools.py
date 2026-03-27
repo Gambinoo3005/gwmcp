@@ -44,11 +44,9 @@ async def create_presentation(
     presentation_id = result.get("presentationId")
     presentation_url = f"https://docs.google.com/presentation/d/{presentation_id}/edit"
 
-    confirmation_message = f"""Presentation Created Successfully for {user_google_email}:
-- Title: {title}
-- Presentation ID: {presentation_id}
-- URL: {presentation_url}
-- Slides: {len(result.get("slides", []))} slide(s) created"""
+    slide_count = len(result.get("slides", []))
+    slide_word = "slide" if slide_count == 1 else "slides"
+    confirmation_message = f'Created presentation "{title}" \u2014 {slide_count} {slide_word} \u2014 {presentation_url}'
 
     logger.info(f"Presentation created successfully for {user_google_email}")
     return confirmation_message
@@ -80,12 +78,14 @@ async def get_presentation(
 
     title = result.get("title", "Untitled")
     slides = result.get("slides", [])
-    page_size = result.get("pageSize", {})
 
     slides_info = []
     for i, slide in enumerate(slides, 1):
         slide_id = slide.get("objectId", "Unknown")
         page_elements = slide.get("pageElements", [])
+        page_type = slide.get("pageType", "SLIDE")
+        element_count = len(page_elements)
+        element_word = "element" if element_count == 1 else "elements"
 
         # Collect text from the slide whose JSON structure is very complicated
         # https://googleapis.github.io/google-api-python-client/docs/dyn/slides_v1.presentations.html#get
@@ -121,27 +121,22 @@ async def get_presentation(
             slide_text_rows = slide_text.split("\n")
             slide_text_rows = [row for row in slide_text_rows if len(row.strip()) > 0]
             if slide_text_rows:
-                slide_text_rows = ["    > " + row for row in slide_text_rows]
-                slide_text = "\n" + "\n".join(slide_text_rows)
+                slide_text = " \u2014 " + "; ".join(slide_text_rows)
             else:
                 slide_text = ""
         except Exception as e:
             logger.warning(f"Failed to extract text from the slide {slide_id}: {e}")
-            slide_text = f"<failed to extract text: {type(e)}, {e}>"
+            slide_text = ""
 
         slides_info.append(
-            f"  Slide {i}: ID {slide_id}, {len(page_elements)} element(s), text: {slide_text if slide_text else 'empty'}"
+            f"  {i}. Slide {i} ({page_type}) \u2014 {element_count} {element_word}{slide_text}"
         )
 
-    confirmation_message = f"""Presentation Details for {user_google_email}:
-- Title: {title}
-- Presentation ID: {presentation_id}
-- URL: https://docs.google.com/presentation/d/{presentation_id}/edit
-- Total Slides: {len(slides)}
-- Page Size: {page_size.get("width", {}).get("magnitude", "Unknown")} x {page_size.get("height", {}).get("magnitude", "Unknown")} {page_size.get("width", {}).get("unit", "")}
-
-Slides Breakdown:
-{chr(10).join(slides_info) if slides_info else "  No slides found"}"""
+    slide_count = len(slides)
+    slide_word = "slide" if slide_count == 1 else "slides"
+    confirmation_message = f'Presentation "{title}" \u2014 {slide_count} {slide_word}:\n' + (
+        "\n".join(slides_info) if slides_info else "  No slides found"
+    )
 
     logger.info(f"Presentation retrieved successfully for {user_google_email}")
     return confirmation_message
@@ -180,28 +175,31 @@ async def batch_update_presentation(
     )
 
     replies = result.get("replies", [])
+    presentation_url = f"https://docs.google.com/presentation/d/{presentation_id}/edit"
 
-    confirmation_message = f"""Batch Update Completed for {user_google_email}:
-- Presentation ID: {presentation_id}
-- URL: https://docs.google.com/presentation/d/{presentation_id}/edit
-- Requests Applied: {len(requests)}
-- Replies Received: {len(replies)}"""
+    # We need the presentation title for a human-friendly message
+    try:
+        pres_result = await asyncio.to_thread(
+            service.presentations().get(presentationId=presentation_id).execute
+        )
+        pres_title = pres_result.get("title", "Untitled")
+    except Exception:
+        pres_title = "Untitled"
+
+    op_count = len(requests)
+    op_word = "operation" if op_count == 1 else "operations"
+    confirmation_message = f'Updated presentation "{pres_title}" \u2014 {op_count} {op_word} applied \u2014 {presentation_url}'
 
     if replies:
-        confirmation_message += "\n\nUpdate Results:"
+        details = []
         for i, reply in enumerate(replies, 1):
             if "createSlide" in reply:
-                slide_id = reply["createSlide"].get("objectId", "Unknown")
-                confirmation_message += (
-                    f"\n  Request {i}: Created slide with ID {slide_id}"
-                )
+                details.append(f"  {i}. Created slide")
             elif "createShape" in reply:
-                shape_id = reply["createShape"].get("objectId", "Unknown")
-                confirmation_message += (
-                    f"\n  Request {i}: Created shape with ID {shape_id}"
-                )
+                details.append(f"  {i}. Created shape")
             else:
-                confirmation_message += f"\n  Request {i}: Operation completed"
+                details.append(f"  {i}. Operation completed")
+        confirmation_message += "\n" + "\n".join(details)
 
     logger.info(f"Batch update completed successfully for {user_google_email}")
     return confirmation_message
@@ -239,30 +237,27 @@ async def get_page(
     page_elements = result.get("pageElements", [])
 
     elements_info = []
-    for element in page_elements:
+    for i, element in enumerate(page_elements, 1):
         element_id = element.get("objectId", "Unknown")
         if "shape" in element:
             shape_type = element["shape"].get("shapeType", "Unknown")
-            elements_info.append(f"  Shape: ID {element_id}, Type: {shape_type}")
+            elements_info.append(f"  {i}. Shape ({shape_type})")
         elif "table" in element:
             table = element["table"]
             rows = table.get("rows", 0)
             cols = table.get("columns", 0)
-            elements_info.append(f"  Table: ID {element_id}, Size: {rows}x{cols}")
+            elements_info.append(f"  {i}. Table ({rows}x{cols})")
         elif "line" in element:
             line_type = element["line"].get("lineType", "Unknown")
-            elements_info.append(f"  Line: ID {element_id}, Type: {line_type}")
+            elements_info.append(f"  {i}. Line ({line_type})")
         else:
-            elements_info.append(f"  Element: ID {element_id}, Type: Unknown")
+            elements_info.append(f"  {i}. Element (unknown type)")
 
-    confirmation_message = f"""Page Details for {user_google_email}:
-- Presentation ID: {presentation_id}
-- Page ID: {page_object_id}
-- Page Type: {page_type}
-- Total Elements: {len(page_elements)}
-
-Page Elements:
-{chr(10).join(elements_info) if elements_info else "  No elements found"}"""
+    element_count = len(page_elements)
+    element_word = "element" if element_count == 1 else "elements"
+    confirmation_message = f'Slide "{page_object_id}" ({page_type}) \u2014 {element_count} {element_word}:\n' + (
+        "\n".join(elements_info) if elements_info else "  No elements found"
+    )
 
     logger.info(f"Page retrieved successfully for {user_google_email}")
     return confirmation_message
@@ -307,14 +302,11 @@ async def get_page_thumbnail(
     )
 
     thumbnail_url = result.get("contentUrl", "")
+    width = result.get("width", "")
+    height = result.get("height", "")
+    dimensions = f"{width}x{height}" if width and height else thumbnail_size
 
-    confirmation_message = f"""Thumbnail Generated for {user_google_email}:
-- Presentation ID: {presentation_id}
-- Page ID: {page_object_id}
-- Thumbnail Size: {thumbnail_size}
-- Thumbnail URL: {thumbnail_url}
-
-You can view or download the thumbnail using the provided URL."""
+    confirmation_message = f"Generated thumbnail for slide {page_object_id} \u2014 {dimensions} \u2014 {thumbnail_url}"
 
     logger.info(f"Thumbnail generated successfully for {user_google_email}")
     return confirmation_message

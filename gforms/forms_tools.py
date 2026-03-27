@@ -6,7 +6,7 @@ This module provides MCP tools for interacting with Google Forms API.
 
 import logging
 import asyncio
-import json
+from datetime import datetime
 from typing import List, Optional, Dict, Any
 
 
@@ -158,9 +158,10 @@ async def create_form(
         "responderUri", f"https://docs.google.com/forms/d/{form_id}/viewform"
     )
 
-    confirmation_message = f"Successfully created form '{created_form.get('info', {}).get('title', title)}' for {user_google_email}. Form ID: {form_id}. Edit URL: {edit_url}. Responder URL: {responder_url}"
+    form_title = created_form.get("info", {}).get("title", title)
+
     logger.info(f"Form created successfully for {user_google_email}. ID: {form_id}")
-    return confirmation_message
+    return f'Created form "{form_title}" \u2014 Edit: {edit_url} \u2014 Share: {responder_url}'
 
 
 @server.tool()
@@ -184,7 +185,6 @@ async def get_form(service, user_google_email: str, form_id: str) -> str:
     form_info = form.get("info", {})
     title = form_info.get("title", "No Title")
     description = form_info.get("description", "No Description")
-    document_title = form_info.get("documentTitle", title)
 
     edit_url = f"https://docs.google.com/forms/d/{form_id}/edit"
     responder_url = form.get(
@@ -196,32 +196,47 @@ async def get_form(service, user_google_email: str, form_id: str) -> str:
         _serialize_form_item(item, i) for i, item in enumerate(items, 1)
     ]
 
+    # Build human-friendly question list
     items_summary = []
     for serialized_item in serialized_items:
         item_index = serialized_item["index"]
         item_title = serialized_item.get("title", f"Item {item_index}")
         item_type = serialized_item.get("type", "UNKNOWN")
-        required_text = " (Required)" if serialized_item.get("required") else ""
-        items_summary.append(
-            f"  {item_index}. {item_title} [{item_type}]{required_text}"
-        )
 
-    items_summary_text = (
-        "\n".join(items_summary) if items_summary else "  No items found"
-    )
-    items_text = json.dumps(serialized_items, indent=2) if serialized_items else "[]"
+        # Build type detail string
+        type_detail = item_type
+        if item_type == "SCALE":
+            scale_q = None
+            # Try to get scale bounds from original item
+            if item_index - 1 < len(items):
+                orig_item = items[item_index - 1]
+                scale_q = orig_item.get("questionItem", {}).get("question", {}).get("scaleQuestion")
+            if scale_q:
+                low = scale_q.get("low", 1)
+                high = scale_q.get("high", 5)
+                type_detail = f"SCALE, {low}\u2013{high}"
+        elif item_type in ("RADIO", "CHECKBOX", "DROP_DOWN") and serialized_item.get("options"):
+            option_values = [o.get("value", "") for o in serialized_item["options"] if o.get("value")]
+            if option_values:
+                type_detail = f"{item_type}: {', '.join(option_values)}"
 
-    result = f"""Form Details for {user_google_email}:
-- Title: "{title}"
-- Description: "{description}"
-- Document Title: "{document_title}"
-- Form ID: {form_id}
-- Edit URL: {edit_url}
-- Responder URL: {responder_url}
-- Items ({len(items)} total):
-{items_summary_text}
-- Items (structured):
-{items_text}"""
+        required_text = ", required" if serialized_item.get("required") else ""
+        items_summary.append(f"  {item_index}. {item_title} ({type_detail}{required_text})")
+
+    question_count = sum(1 for s in serialized_items if s.get("type") not in ("PAGE_BREAK", "TEXT_ITEM", "IMAGE", "VIDEO"))
+
+    if items_summary:
+        header = f'Form "{title}" \u2014 {question_count} question{"s" if question_count != 1 else ""}:'
+        if description and description != "No Description":
+            header += f"\n  Description: {description}"
+        header += f"\n  Edit: {edit_url} \u2014 Share: {responder_url}"
+        items_text = "\n".join(items_summary)
+        result = f"{header}\n{items_text}"
+    else:
+        result = f'Form "{title}" \u2014 0 questions'
+        if description and description != "No Description":
+            result += f"\n  Description: {description}"
+        result += f"\n  Edit: {edit_url} \u2014 Share: {responder_url}"
 
     logger.info(f"Successfully retrieved form for {user_google_email}. ID: {form_id}")
     return result
@@ -258,15 +273,18 @@ async def set_publish_settings(
         "requireAuthentication": require_authentication,
     }
 
+    # Fetch form title for human-friendly output
+    form = await asyncio.to_thread(service.forms().get(formId=form_id).execute)
+    form_title = form.get("info", {}).get("title", "Untitled form")
+
     await asyncio.to_thread(
         service.forms().setPublishSettings(formId=form_id, body=settings_body).execute
     )
 
-    confirmation_message = f"Successfully updated publish settings for form {form_id} for {user_google_email}. Publish as template: {publish_as_template}, Require authentication: {require_authentication}"
     logger.info(
         f"Publish settings updated successfully for {user_google_email}. Form ID: {form_id}"
     )
-    return confirmation_message
+    return f'Updated publish settings for "{form_title}"'
 
 
 @server.tool()
@@ -290,33 +308,68 @@ async def get_form_response(
         f"[get_form_response] Invoked. Email: '{user_google_email}', Form ID: {form_id}, Response ID: {response_id}"
     )
 
+    # Fetch form metadata to get title and question labels
+    form = await asyncio.to_thread(service.forms().get(formId=form_id).execute)
+    form_title = form.get("info", {}).get("title", "Untitled form")
+
+    # Build question_id -> (index, title) mapping from form items
+    question_map: Dict[str, tuple] = {}
+    q_counter = 0
+    for item in form.get("items", []):
+        qi = item.get("questionItem", {})
+        question = qi.get("question", {})
+        qid = question.get("questionId")
+        if qid:
+            q_counter += 1
+            question_map[qid] = (q_counter, item.get("title", f"Question {q_counter}"))
+        # Handle question groups (grids)
+        qgi = item.get("questionGroupItem", {})
+        for sub_q in qgi.get("questions", []):
+            sub_qid = sub_q.get("questionId")
+            if sub_qid:
+                q_counter += 1
+                row_title = sub_q.get("rowQuestion", {}).get("title", f"Question {q_counter}")
+                question_map[sub_qid] = (q_counter, row_title)
+
     response = await asyncio.to_thread(
         service.forms().responses().get(formId=form_id, responseId=response_id).execute
     )
 
-    response_id = response.get("responseId", "Unknown")
-    create_time = response.get("createTime", "Unknown")
-    last_submitted_time = response.get("lastSubmittedTime", "Unknown")
+    last_submitted_time = response.get("lastSubmittedTime", "")
+    formatted_time = last_submitted_time
+    if last_submitted_time:
+        try:
+            dt = datetime.fromisoformat(last_submitted_time.replace("Z", "+00:00"))
+            formatted_time = dt.strftime("%b %d, %I:%M %p").replace(" 0", " ")
+        except (ValueError, AttributeError):
+            formatted_time = last_submitted_time
 
     answers = response.get("answers", {})
-    answer_details = []
-    for question_id, answer_data in answers.items():
+    answer_lines = []
+    # Sort answers by their question index so they appear in form order
+    sorted_answers = sorted(
+        answers.items(),
+        key=lambda kv: question_map.get(kv[0], (999, ""))[0],
+    )
+    for question_id, answer_data in sorted_answers:
+        idx, q_title = question_map.get(question_id, (None, question_id))
         question_response = answer_data.get("textAnswers", {}).get("answers", [])
         if question_response:
-            answer_text = ", ".join([ans.get("value", "") for ans in question_response])
-            answer_details.append(f"  Question ID {question_id}: {answer_text}")
+            answer_text = ", ".join(ans.get("value", "") for ans in question_response)
+            display_answer = f'"{answer_text}"' if not answer_text.isdigit() else answer_text
         else:
-            answer_details.append(f"  Question ID {question_id}: No answer provided")
+            display_answer = "(no answer)"
 
-    answers_text = "\n".join(answer_details) if answer_details else "  No answers found"
+        if idx is not None:
+            answer_lines.append(f"  {idx}. {q_title} \u2192 {display_answer}")
+        else:
+            answer_lines.append(f"  - {q_title} \u2192 {display_answer}")
 
-    result = f"""Form Response Details for {user_google_email}:
-- Form ID: {form_id}
-- Response ID: {response_id}
-- Created: {create_time}
-- Last Submitted: {last_submitted_time}
-- Answers:
-{answers_text}"""
+    if answer_lines:
+        answers_text = "\n".join(answer_lines)
+        result = f'Response to "{form_title}" ({formatted_time}):\n{answers_text}'
+    else:
+        result = f'Response to "{form_title}" ({formatted_time}):\n  No answers found'
 
     logger.info(
         f"Successfully retrieved response for {user_google_email}. Response ID: {response_id}"
@@ -350,6 +403,10 @@ async def list_form_responses(
         f"[list_form_responses] Invoked. Email: '{user_google_email}', Form ID: {form_id}"
     )
 
+    # Fetch form title for human-friendly output
+    form = await asyncio.to_thread(service.forms().get(formId=form_id).execute)
+    form_title = form.get("info", {}).get("title", "Untitled form")
+
     params = {"formId": form_id, "pageSize": page_size}
     if page_token:
         params["pageToken"] = page_token
@@ -362,30 +419,30 @@ async def list_form_responses(
     next_page_token = responses_result.get("nextPageToken")
 
     if not responses:
-        return f"No responses found for form {form_id} for {user_google_email}."
+        return f'No responses found for "{form_title}"'
 
     response_details = []
     for i, response in enumerate(responses, 1):
-        response_id = response.get("responseId", "Unknown")
-        create_time = response.get("createTime", "Unknown")
-        last_submitted_time = response.get("lastSubmittedTime", "Unknown")
+        last_submitted_time = response.get("lastSubmittedTime", "")
+        formatted_time = last_submitted_time
+        if last_submitted_time:
+            try:
+                dt = datetime.fromisoformat(last_submitted_time.replace("Z", "+00:00"))
+                formatted_time = dt.strftime("%b %d, %I:%M %p").replace(" 0", " ")
+            except (ValueError, AttributeError):
+                formatted_time = last_submitted_time
 
         answers_count = len(response.get("answers", {}))
+        answer_word = "answer" if answers_count == 1 else "answers"
         response_details.append(
-            f"  {i}. Response ID: {response_id} | Created: {create_time} | Last Submitted: {last_submitted_time} | Answers: {answers_count}"
+            f"  {i}. Response from {formatted_time} \u2014 {answers_count} {answer_word}"
         )
 
-    pagination_info = (
-        f"\nNext page token: {next_page_token}"
-        if next_page_token
-        else "\nNo more pages."
-    )
+    details_text = "\n".join(response_details)
+    result = f'Found {len(responses)} response{"s" if len(responses) != 1 else ""} to "{form_title}":\n{details_text}'
 
-    result = f"""Form Responses for {user_google_email}:
-- Form ID: {form_id}
-- Total responses returned: {len(responses)}
-- Responses:
-{chr(10).join(response_details)}{pagination_info}"""
+    if next_page_token:
+        result += f"\n  (More responses available)"
 
     logger.info(
         f"Successfully retrieved {len(responses)} responses for {user_google_email}. Form ID: {form_id}"
@@ -411,38 +468,18 @@ async def _batch_update_form_impl(
     Returns:
         Formatted string with batch update results.
     """
+    # Fetch form title for human-friendly output
+    form = await asyncio.to_thread(service.forms().get(formId=form_id).execute)
+    form_title = form.get("info", {}).get("title", "Untitled form")
+
     body = {"requests": requests}
 
     result = await asyncio.to_thread(
         service.forms().batchUpdate(formId=form_id, body=body).execute
     )
 
-    replies = result.get("replies", [])
-
-    confirmation_message = f"""Batch Update Completed:
-- Form ID: {form_id}
-- URL: https://docs.google.com/forms/d/{form_id}/edit
-- Requests Applied: {len(requests)}
-- Replies Received: {len(replies)}"""
-
-    if replies:
-        confirmation_message += "\n\nUpdate Results:"
-        for i, reply in enumerate(replies, 1):
-            if "createItem" in reply:
-                item_id = reply["createItem"].get("itemId", "Unknown")
-                question_ids = reply["createItem"].get("questionId", [])
-                question_info = (
-                    f" (Question IDs: {', '.join(question_ids)})"
-                    if question_ids
-                    else ""
-                )
-                confirmation_message += (
-                    f"\n  Request {i}: Created item {item_id}{question_info}"
-                )
-            else:
-                confirmation_message += f"\n  Request {i}: Operation completed"
-
-    return confirmation_message
+    change_word = "change" if len(requests) == 1 else "changes"
+    return f'Updated form "{form_title}" \u2014 {len(requests)} {change_word} applied'
 
 
 @server.tool()

@@ -336,14 +336,16 @@ async def list_calendars(service, user_google_email: str) -> str:
     )
     items = calendar_list_response.get("items", [])
     if not items:
-        return f"No calendars found for {user_google_email}."
+        return "No calendars found."
 
-    calendars_summary_list = [
-        f'- "{cal.get("summary", "No Summary")}"{" (Primary)" if cal.get("primary") else ""} (ID: {cal["id"]})'
-        for cal in items
-    ]
+    calendars_summary_list = []
+    for idx, cal in enumerate(items, 1):
+        name = cal.get("summary", "No Summary")
+        primary_tag = " (primary)" if cal.get("primary") else ""
+        calendars_summary_list.append(f"  {idx}. {name}{primary_tag}")
+
     text_output = (
-        f"Successfully listed {len(items)} calendars for {user_google_email}:\n"
+        f"Found {len(items)} calendars:\n"
         + "\n".join(calendars_summary_list)
     )
     logger.info(f"Successfully listed {len(items)} calendars for {user_google_email}.")
@@ -443,9 +445,14 @@ async def get_events(
         items = events_result.get("items", [])
     if not items:
         if event_id:
-            return f"Event with ID '{event_id}' not found in calendar '{calendar_id}' for {user_google_email}."
+            return f"Event not found in calendar \"{calendar_id}\"."
         else:
-            return f"No events found in calendar '{calendar_id}' for {user_google_email} for the specified time range."
+            time_label = ""
+            if effective_time_min and effective_time_max:
+                time_label = f" for {effective_time_min} \u2013 {effective_time_max}"
+            elif effective_time_min:
+                time_label = f" from {effective_time_min} onward"
+            return f"No events found{time_label}."
 
     # Handle returning detailed output for a single event when requested
     if event_id and detailed:
@@ -465,30 +472,25 @@ async def get_events(
 
         meeting_link = _get_meeting_link(item)
 
-        event_details = (
-            f"Event Details:\n"
-            f"- Title: {summary}\n"
-            f"- Starts: {start}\n"
-            f"- Ends: {end}\n"
-            f"- Description: {description}\n"
-            f"- Location: {location}\n"
-            f"- Color ID: {color_id}\n"
-        )
+        event_details = f"{summary} \u2014 {start} to {end}\n"
+        if location and location != "No Location":
+            event_details += f"  Location: {location}\n"
+        if description and description != "No Description":
+            event_details += f"  Description: {description}\n"
         if meeting_link:
-            event_details += f"- Meeting Link: {meeting_link}\n"
-        event_details += (
-            f"- Attendees: {attendee_emails}\n"
-            f"- Attendee Details: {attendee_details_str}\n"
-        )
+            event_details += f"  Meeting: {meeting_link}\n"
+        if attendees:
+            event_details += f"  Attendees:\n    {attendee_details_str}\n"
 
         if include_attachments:
-            attachments = item.get("attachments", [])
+            att_list = item.get("attachments", [])
             attachment_details_str = _format_attachment_details(
-                attachments, indent="  "
+                att_list, indent="    "
             )
-            event_details += f"- Attachments: {attachment_details_str}\n"
+            if att_list:
+                event_details += f"  Attachments:\n    {attachment_details_str}\n"
 
-        event_details += f"- Event ID: {event_id}\n- Link: {link}"
+        event_details += f"  {link}"
         logger.info(
             f"[get_events] Successfully retrieved detailed event {event_id} for {user_google_email}."
         )
@@ -517,46 +519,43 @@ async def get_events(
 
             meeting_link = _get_meeting_link(item)
 
-            event_detail_parts = (
-                f'- "{summary}" (Starts: {start_time}, Ends: {end_time})\n'
-                f"  Description: {description}\n"
-                f"  Location: {location}\n"
-            )
+            event_detail_parts = f"  {len(event_details_list) + 1}. {summary} \u2014 {start_time} to {end_time}\n"
+            if location and location != "No Location":
+                event_detail_parts += f"     Location: {location}\n"
+            if description and description != "No Description":
+                event_detail_parts += f"     Description: {description}\n"
             if meeting_link:
-                event_detail_parts += f"  Meeting Link: {meeting_link}\n"
-            event_detail_parts += (
-                f"  Attendees: {attendee_emails}\n"
-                f"  Attendee Details: {attendee_details_str}\n"
-            )
+                event_detail_parts += f"     Meeting: {meeting_link}\n"
+            if attendees:
+                event_detail_parts += f"     Attendees: {attendee_emails}\n"
 
             if include_attachments:
-                attachments = item.get("attachments", [])
+                att_list = item.get("attachments", [])
                 attachment_details_str = _format_attachment_details(
-                    attachments, indent="    "
+                    att_list, indent="       "
                 )
-                event_detail_parts += f"  Attachments: {attachment_details_str}\n"
+                if att_list:
+                    event_detail_parts += f"     Attachments: {attachment_details_str}\n"
 
-            event_detail_parts += f"  ID: {item_event_id} | Link: {link}"
+            event_detail_parts += f"     {link}"
             event_details_list.append(event_detail_parts)
         else:
             # Basic output format
             meeting_link = _get_meeting_link(item)
-            basic_line = f'- "{summary}" (Starts: {start_time}, Ends: {end_time})'
+            basic_line = f"  {len(event_details_list) + 1}. {summary} \u2014 {start_time} to {end_time}"
             if meeting_link:
-                basic_line += f" Meeting: {meeting_link}"
-            basic_line += f" ID: {item_event_id} | Link: {link}"
+                basic_line += f"\n     {meeting_link}"
+            else:
+                basic_line += f"\n     {link}"
             event_details_list.append(basic_line)
 
     if event_id:
         # Single event basic output
-        text_output = (
-            f"Successfully retrieved event from calendar '{calendar_id}' for {user_google_email}:\n"
-            + "\n".join(event_details_list)
-        )
+        text_output = "\n".join(event_details_list)
     else:
         # Multiple events output
         text_output = (
-            f"Successfully retrieved {len(items)} events from calendar '{calendar_id}' for {user_google_email}:\n"
+            f"Found {len(items)} events:\n"
             + "\n".join(event_details_list)
         )
 
@@ -769,19 +768,29 @@ async def _create_event_impl(
                 .execute()
             )
         )
-    link = created_event.get("htmlLink", "No link available")
-    confirmation_message = f"Successfully created event '{created_event.get('summary', summary)}' for {user_google_email}. Link: {link}"
+    link = created_event.get("htmlLink", "")
+    event_start = created_event.get("start", {})
+    start_display = event_start.get("dateTime", event_start.get("date", start_time))
+    event_end = created_event.get("end", {})
+    end_display = event_end.get("dateTime", event_end.get("date", end_time))
+    event_title = created_event.get("summary", summary)
+
+    confirmation_message = f'Created event "{event_title}" on {start_display} to {end_display}'
 
     # Add Google Meet information if conference was created
+    meet_link_str = ""
     if add_google_meet and "conferenceData" in created_event:
         conference_data = created_event["conferenceData"]
         if "entryPoints" in conference_data:
             for entry_point in conference_data["entryPoints"]:
                 if entry_point.get("entryPointType") == "video":
-                    meet_link = entry_point.get("uri", "")
-                    if meet_link:
-                        confirmation_message += f" Google Meet: {meet_link}"
-                        break
+                    meet_link_str = entry_point.get("uri", "")
+                    break
+
+    if meet_link_str:
+        confirmation_message += f" \u2014 {meet_link_str}"
+    elif link:
+        confirmation_message += f" \u2014 {link}"
 
     logger.info(
         f"Event created successfully for {user_google_email}. ID: {created_event.get('id')}, Link: {link}"
@@ -1033,8 +1042,21 @@ async def _modify_event_impl(
         )
     )
 
-    link = updated_event.get("htmlLink", "No link available")
-    confirmation_message = f"Successfully modified event '{updated_event.get('summary', summary)}' (ID: {event_id}) for {user_google_email}. Link: {link}"
+    link = updated_event.get("htmlLink", "")
+    event_title = updated_event.get("summary", summary or "Untitled")
+    event_start = updated_event.get("start", {})
+    start_display = event_start.get("dateTime", event_start.get("date", ""))
+    event_end = updated_event.get("end", {})
+    end_display = event_end.get("dateTime", event_end.get("date", ""))
+
+    # Build a concise change summary
+    change_parts = []
+    if start_display:
+        change_parts.append(f"{start_display} to {end_display}" if end_display else start_display)
+
+    confirmation_message = f'Updated event "{event_title}"'
+    if change_parts:
+        confirmation_message += f" \u2014 {', '.join(change_parts)}"
 
     # Add Google Meet information if conference was added
     if add_google_meet is True and "conferenceData" in updated_event:
@@ -1044,10 +1066,13 @@ async def _modify_event_impl(
                 if entry_point.get("entryPointType") == "video":
                     meet_link = entry_point.get("uri", "")
                     if meet_link:
-                        confirmation_message += f" Google Meet: {meet_link}"
+                        confirmation_message += f" \u2014 Meet: {meet_link}"
                         break
     elif add_google_meet is False:
-        confirmation_message += " (Google Meet removed)"
+        confirmation_message += " \u2014 Google Meet removed"
+
+    if link:
+        confirmation_message += f" \u2014 {link}"
 
     logger.info(
         f"Event modified successfully for {user_google_email}. ID: {updated_event.get('id')}, Link: {link}"
@@ -1071,13 +1096,15 @@ async def _delete_event_impl(
         f"[delete_event] Attempting to delete event with ID: '{event_id}' in calendar '{calendar_id}'"
     )
 
-    # Try to get the event first to verify it exists
+    # Try to get the event first to verify it exists and capture its name
+    event_summary = None
     try:
-        await asyncio.to_thread(
+        existing_event = await asyncio.to_thread(
             lambda: (
                 service.events().get(calendarId=calendar_id, eventId=event_id).execute()
             )
         )
+        event_summary = existing_event.get("summary")
         logger.info("[delete_event] Successfully verified event exists before deletion")
     except HttpError as get_error:
         if get_error.resp.status == 404:
@@ -1098,7 +1125,10 @@ async def _delete_event_impl(
         )
     )
 
-    confirmation_message = f"Successfully deleted event (ID: {event_id}) from calendar '{calendar_id}' for {user_google_email}."
+    if event_summary:
+        confirmation_message = f'Deleted event "{event_summary}" from calendar "{calendar_id}".'
+    else:
+        confirmation_message = f'Deleted event from calendar "{calendar_id}".'
     logger.info(f"Event deleted successfully for {user_google_email}. ID: {event_id}")
     return confirmation_message
 
@@ -1303,41 +1333,38 @@ async def query_freebusy(
     time_max_result = freebusy_result.get("timeMax", formatted_time_max)
 
     if not calendars:
-        return f"No free/busy information found for the requested calendars for {user_google_email}."
+        return f"No free/busy information available for {time_min_result} \u2013 {time_max_result}."
 
     # Format the output
     output_lines = [
-        f"Free/Busy information for {user_google_email}:",
-        f"Time range: {time_min_result} to {time_max_result}",
-        "",
+        f"Availability for {time_min_result} \u2013 {time_max_result}:",
     ]
 
     for cal_id, cal_data in calendars.items():
-        output_lines.append(f"Calendar: {cal_id}")
+        if len(calendars) > 1:
+            output_lines.append(f"  Calendar: {cal_id}")
 
         # Check for errors
         errors = cal_data.get("errors", [])
         if errors:
-            output_lines.append("  Errors:")
             for error in errors:
                 domain = error.get("domain", "unknown")
                 reason = error.get("reason", "unknown")
-                output_lines.append(f"    - {domain}: {reason}")
-            output_lines.append("")
+                output_lines.append(f"  Error: {domain} \u2014 {reason}")
             continue
 
         # Get busy periods
         busy_periods = cal_data.get("busy", [])
         if not busy_periods:
-            output_lines.append("  Status: Free (no busy periods)")
+            output_lines.append("  Free: all times in range")
         else:
-            output_lines.append(f"  Busy periods: {len(busy_periods)}")
+            busy_strs = []
             for period in busy_periods:
                 start = period.get("start", "Unknown")
                 end = period.get("end", "Unknown")
-                output_lines.append(f"    - {start} to {end}")
-
-        output_lines.append("")
+                busy_strs.append(f"{start} \u2013 {end}")
+            output_lines.append(f"  Busy: {', '.join(busy_strs)}")
+            output_lines.append("  Free: all other times")
 
     result_text = "\n".join(output_lines)
     logger.info(

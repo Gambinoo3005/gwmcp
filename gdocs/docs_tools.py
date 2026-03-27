@@ -92,12 +92,13 @@ async def search_docs(
     )
     files = response.get("files", [])
     if not files:
-        return f"No Google Docs found matching '{query}'."
+        return f'No docs found matching "{query}"'
 
-    output = [f"Found {len(files)} Google Docs matching '{query}':"]
-    for f in files:
+    output = [f'Found {len(files)} docs matching "{query}":']
+    for i, f in enumerate(files, 1):
+        mod_time = f.get("modifiedTime", "")[:10] if f.get("modifiedTime") else "unknown"
         output.append(
-            f"- {f['name']} (ID: {f['id']}) Modified: {f.get('modifiedTime')} Link: {f.get('webViewLink')}"
+            f'  {i}. {f["name"]} (Doc) — Modified {mod_time}\n     {f.get("webViewLink", "")}'
         )
     return "\n".join(output)
 
@@ -291,10 +292,7 @@ async def get_doc_content(
                     f"{len(file_content_bytes)} bytes]"
                 )
 
-    header = (
-        f'File: "{file_name}" (ID: {document_id}, Type: {mime_type})\n'
-        f"Link: {web_view_link}\n\n--- CONTENT ---\n"
-    )
+    header = f'Doc "{file_name}" ({web_view_link}):\n---\n'
     return header + body_text
 
 
@@ -327,11 +325,12 @@ async def list_docs_in_folder(
     )
     items = rsp.get("files", [])
     if not items:
-        return f"No Google Docs found in folder '{folder_id}'."
-    out = [f"Found {len(items)} Docs in folder '{folder_id}':"]
-    for f in items:
+        return f"No docs found in folder"
+    out = [f"Found {len(items)} docs in folder:"]
+    for i, f in enumerate(items, 1):
+        mod_time = f.get("modifiedTime", "")[:10] if f.get("modifiedTime") else "unknown"
         out.append(
-            f"- {f['name']} (ID: {f['id']}) Modified: {f.get('modifiedTime')} Link: {f.get('webViewLink')}"
+            f'  {i}. {f["name"]} (Doc) — Modified {mod_time}\n     {f.get("webViewLink", "")}'
         )
     return "\n".join(out)
 
@@ -365,11 +364,10 @@ async def create_doc(
             .execute
         )
     link = f"https://docs.google.com/document/d/{doc_id}/edit"
-    msg = f"Created Google Doc '{title}' (ID: {doc_id}) for {user_google_email}. Link: {link}"
     logger.info(
-        f"Successfully created Google Doc '{title}' (ID: {doc_id}) for {user_google_email}. Link: {link}"
+        f"Created doc '{title}' (ID: {doc_id}) for {user_google_email}. Link: {link}"
     )
-    return msg
+    return f'Created doc "{title}" — {link}'
 
 
 @server.tool()
@@ -566,8 +564,8 @@ async def modify_doc_text(
 
     link = f"https://docs.google.com/document/d/{document_id}/edit"
     operation_summary = "; ".join(operations)
-    text_info = f" Text length: {len(text)} characters." if text else ""
-    return f"{operation_summary} in document {document_id}.{text_info} Link: {link}"
+    text_info = f" ({len(text)} chars)" if text else ""
+    return f"Updated doc — {operation_summary}{text_info} — {link}"
 
 
 @server.tool()
@@ -618,7 +616,7 @@ async def find_and_replace_doc(
             replacements = reply["replaceAllText"].get("occurrencesChanged", 0)
 
     link = f"https://docs.google.com/document/d/{document_id}/edit"
-    return f"Replaced {replacements} occurrence(s) of '{find_text}' with '{replace_text}' in document {document_id}. Link: {link}"
+    return f'Updated doc — replaced {replacements} occurrences of "{find_text}" with "{replace_text}" — {link}'
 
 
 @server.tool()
@@ -700,7 +698,7 @@ async def insert_doc_elements(
     )
 
     link = f"https://docs.google.com/document/d/{document_id}/edit"
-    return f"Inserted {description} at index {index} in document {document_id}. Link: {link}"
+    return f"Inserted {description} at index {index} — {link}"
 
 
 @server.tool()
@@ -792,7 +790,7 @@ async def insert_doc_image(
         size_info = f" (size: {width or 'auto'}x{height or 'auto'} points)"
 
     link = f"https://docs.google.com/document/d/{document_id}/edit"
-    return f"Inserted {source_description}{size_info} at index {index} in document {document_id}. Link: {link}"
+    return f"Inserted {source_description}{size_info} at index {index} — {link}"
 
 
 @server.tool()
@@ -847,7 +845,7 @@ async def update_doc_headers_footers(
 
     if success:
         link = f"https://docs.google.com/document/d/{document_id}/edit"
-        return f"{message}. Link: {link}"
+        return f"Updated {section_type} — {message} — {link}"
     else:
         return f"Error: {message}"
 
@@ -934,8 +932,8 @@ async def batch_update_doc(
 
     if success:
         link = f"https://docs.google.com/document/d/{document_id}/edit"
-        replies_count = metadata.get("replies_count", 0)
-        return f"{message} on document {document_id}. API replies: {replies_count}. Link: {link}"
+        op_count = len(operations)
+        return f"Batch updated doc — {op_count} operations applied — {link}"
     else:
         return f"Error: {message}"
 
@@ -1118,7 +1116,7 @@ async def inspect_doc_structure(
         result["inspected_tab_id"] = tab_id
 
     link = f"https://docs.google.com/document/d/{document_id}/edit"
-    return f"Document structure analysis for {document_id}:\n\n{json.dumps(result, indent=2)}\n\nLink: {link}"
+    return f"{json.dumps(result, indent=2)}\n\n{link}"
 
 
 @server.tool()
@@ -1214,9 +1212,7 @@ async def create_table_with_data(
         rows = metadata.get("rows", 0)
         columns = metadata.get("columns", 0)
 
-        return (
-            f"SUCCESS: {message}. Table: {rows}x{columns}, Index: {index}. Link: {link}"
-        )
+        return f"Created {rows}x{columns} table at index {index} — {link}"
     else:
         return f"ERROR: {message}"
 
@@ -1305,7 +1301,7 @@ async def debug_table_structure(
         debug_info["cells"].append(row_info)
 
     link = f"https://docs.google.com/document/d/{document_id}/edit"
-    return f"Table structure debug for table {table_index}:\n\n{json.dumps(debug_info, indent=2)}\n\nLink: {link}"
+    return f"{json.dumps(debug_info, indent=2)}\n\n{link}"
 
 
 @server.tool()
@@ -1417,13 +1413,7 @@ async def export_doc_to_pdf(
             f"[export_doc_to_pdf] Successfully uploaded PDF to Drive: {pdf_file_id}"
         )
 
-        folder_info = ""
-        if folder_id:
-            folder_info = f" in folder {folder_id}"
-        elif pdf_parents:
-            folder_info = f" in folder {pdf_parents[0]}"
-
-        return f"Successfully exported '{original_name}' to PDF and saved to Drive as '{pdf_filename}' (ID: {pdf_file_id}, {pdf_size:,} bytes){folder_info}. PDF: {pdf_web_link} | Original: {web_view_link}"
+        return f'Exported "{original_name}" to PDF — {pdf_web_link}'
 
     except Exception as e:
         return f"Error: Failed to upload PDF to Drive: {str(e)}. PDF was generated successfully ({pdf_size:,} bytes) but could not be saved to Drive."
@@ -1683,7 +1673,7 @@ async def update_paragraph_style(
 
     # Validate we have at least one operation
     if not requests:
-        return f"No paragraph style changes or list creation specified for document {document_id}"
+        return "Error: No paragraph style changes or list creation specified"
 
     await asyncio.to_thread(
         service.documents()
@@ -1705,7 +1695,7 @@ async def update_paragraph_style(
         summary_parts.append(list_desc)
 
     link = f"https://docs.google.com/document/d/{document_id}/edit"
-    return f"Applied paragraph formatting ({', '.join(summary_parts)}) to range {start_index}-{end_index} in document {document_id}. Link: {link}"
+    return f"Applied paragraph formatting ({', '.join(summary_parts)}) to range {start_index}-{end_index} — {link}"
 
 
 @server.tool()
@@ -1868,12 +1858,9 @@ async def insert_doc_tab(
             tab_id = reply["createDocumentTab"].get("tabProperties", {}).get("tabId")
 
     link = f"https://docs.google.com/document/d/{document_id}/edit"
-    msg = f"Inserted tab '{title}' at index {index} in document {document_id}."
-    if tab_id:
-        msg += f" Tab ID: {tab_id}."
-    if parent_tab_id:
-        msg += f" Nested under parent tab {parent_tab_id}."
-    return f"{msg} Link: {link}"
+    tab_info = f" (tab {tab_id})" if tab_id else ""
+    nested_info = f", nested under {parent_tab_id}" if parent_tab_id else ""
+    return f'Inserted tab "{title}"{tab_info}{nested_info} — {link}'
 
 
 @server.tool()
@@ -1906,7 +1893,7 @@ async def delete_doc_tab(
     )
 
     link = f"https://docs.google.com/document/d/{document_id}/edit"
-    return f"Deleted tab '{tab_id}' from document {document_id}. Link: {link}"
+    return f'Deleted tab "{tab_id}" — {link}'
 
 
 @server.tool()
@@ -1943,9 +1930,7 @@ async def update_doc_tab(
     )
 
     link = f"https://docs.google.com/document/d/{document_id}/edit"
-    return (
-        f"Renamed tab '{tab_id}' to '{title}' in document {document_id}. Link: {link}"
-    )
+    return f'Renamed tab to "{title}" — {link}'
 
 
 # Create comment management tools for documents

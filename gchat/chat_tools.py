@@ -7,6 +7,7 @@ This module provides MCP tools for interacting with Google Chat API.
 import base64
 import logging
 import asyncio
+from datetime import datetime
 from typing import Dict, List, Optional
 
 import httpx
@@ -100,6 +101,34 @@ def _extract_rich_links(msg: dict) -> List[str]:
     return urls
 
 
+def _format_timestamp(raw: str, date_only: bool = False) -> str:
+    """Convert an ISO-8601 timestamp to a human-friendly form.
+
+    Returns e.g. 'Mar 26, 10:30 AM' or 'Mar 26' (date_only=True).
+    Falls back to the raw string on parse failure.
+    """
+    if not raw or raw == "Unknown Time":
+        return raw
+    try:
+        dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+        if date_only:
+            return dt.strftime("%b %d")
+        return dt.strftime("%b %d, %I:%M %p").replace(" 0", " ")
+    except (ValueError, TypeError):
+        return raw
+
+
+def _format_size(size_bytes: int) -> str:
+    """Return a human-friendly file size string."""
+    if size_bytes < 1024:
+        return f"{size_bytes} B"
+    kb = size_bytes / 1024
+    if kb < 1024:
+        return f"{kb:.0f} KB"
+    mb = kb / 1024
+    return f"{mb:.1f} MB"
+
+
 @server.tool()
 @require_google_service("chat", "chat_spaces_readonly")
 @handle_http_errors("list_spaces", service_type="chat")
@@ -132,14 +161,24 @@ async def list_spaces(
 
     spaces = response.get("spaces", [])
     if not spaces:
-        return f"No Chat spaces found for type '{space_type}'."
+        return "No spaces found"
 
-    output = [f"Found {len(spaces)} Chat spaces (type: {space_type}):"]
+    member_counts = {}
     for space in spaces:
-        space_name = space.get("displayName", "Unnamed Space")
-        space_id = space.get("name", "")
+        sid = space.get("name", "")
+        mc = space.get("membershipCount")
+        if mc is not None:
+            member_counts[sid] = mc
+
+    output = [f"Found {len(spaces)} spaces:"]
+    for i, space in enumerate(spaces, 1):
+        display = space.get("displayName", "Unnamed Space")
         space_type_actual = space.get("spaceType", "UNKNOWN")
-        output.append(f"- {space_name} (ID: {space_id}, Type: {space_type_actual})")
+        sid = space.get("name", "")
+        mc = member_counts.get(sid)
+        prefix = f"#{display}" if space_type_actual == "SPACE" else display
+        members_part = f" \u2014 {mc} members" if mc is not None else ""
+        output.append(f"  {i}. {prefix} ({space_type_actual}){members_part}")
 
     return "\n".join(output)
 
@@ -197,7 +236,7 @@ async def get_messages(
 
     messages = response.get("messages", [])
     if not messages:
-        return f"No messages found in space '{space_name}' (ID: {space_id})."
+        return f"No messages found in #{space_name}"
 
     # Pre-resolve unique senders in parallel
     sender_lookup = {}
@@ -211,37 +250,33 @@ async def get_messages(
     )
     sender_map = dict(zip(sender_lookup.keys(), resolved_names))
 
-    output = [f"Messages from '{space_name}' (ID: {space_id}):\n"]
-    for msg in messages:
+    output = [f"Messages in #{space_name}:"]
+    for i, msg in enumerate(messages, 1):
         sender_obj = msg.get("sender", {})
         sender_key = sender_obj.get("name", "")
         sender = sender_map.get(sender_key) or await _resolve_sender(
             people_service, sender_obj
         )
         create_time = msg.get("createTime", "Unknown Time")
-        text_content = msg.get("text", "No text content")
+        ts = _format_timestamp(create_time)
+        text_content = msg.get("text", "")
         msg_name = msg.get("name", "")
 
-        output.append(f"[{create_time}] {sender}:")
-        output.append(f"  {text_content}")
+        line = f"  {i}. {sender} ({ts}): {text_content}"
+        output.append(line)
         rich_links = _extract_rich_links(msg)
         for url in rich_links:
-            output.append(f"  [linked: {url}]")
+            output.append(f"     [link: {url}]")
         # Show attachments
         attachments = msg.get("attachment", [])
         for idx, att in enumerate(attachments):
-            att_name = att.get("contentName", "unnamed")
+            att_filename = att.get("contentName", "unnamed")
             att_type = att.get("contentType", "unknown type")
-            att_resource = att.get("name", "")
-            output.append(f"  [attachment {idx}: {att_name} ({att_type})]")
-            if att_resource:
-                output.append(
-                    f"  Use download_chat_attachment(message_id='{msg_name}', attachment_index={idx}) to download"
-                )
+            output.append(f"     [attachment: {att_filename} ({att_type})]")
         # Show thread info if this is a threaded reply
         thread = msg.get("thread", {})
         if msg.get("threadReply") and thread.get("name"):
-            output.append(f"  [thread: {thread['name']}]")
+            output.append(f"     [threaded reply]")
         # Show emoji reactions
         reactions = msg.get("emojiReactionSummaries", [])
         if reactions:
@@ -254,8 +289,7 @@ async def get_messages(
                     symbol = f":{ce.get('uid', '?')}:"
                 count = r.get("reactionCount", 0)
                 parts.append(f"{symbol}x{count}")
-            output.append(f"  [reactions: {', '.join(parts)}]")
-        output.append(f"  (Message ID: {msg_name})\n")
+            output.append(f"     [{', '.join(parts)}]")
 
     return "\n".join(output)
 
@@ -299,14 +333,17 @@ async def send_message(
         service.spaces().messages().create(**request_params).execute
     )
 
-    message_name = message.get("name", "")
-    create_time = message.get("createTime", "")
+    # Resolve the space display name for a friendlier confirmation
+    try:
+        space_info = await asyncio.to_thread(
+            service.spaces().get(name=space_id).execute
+        )
+        display = space_info.get("displayName", space_id)
+    except Exception:
+        display = space_id
 
-    msg = f"Message sent to space '{space_id}' by {user_google_email}. Message ID: {message_name}, Time: {create_time}"
-    logger.info(
-        f"Successfully sent message to space '{space_id}' by {user_google_email}"
-    )
-    return msg
+    logger.info(f"Sent message to space '{space_id}' by {user_google_email}")
+    return f"Sent message to #{display}"
 
 
 @server.tool()
@@ -409,7 +446,9 @@ async def search_messages(
         messages = [m for m in messages if query_lower in (m.get("text") or "").lower()]
 
     if not messages:
-        return f"No messages found matching '{search_desc}' in {context}."
+        if query:
+            return f'No messages found matching "{query}"'
+        return "No messages found"
 
     # Pre-resolve unique senders in parallel
     sender_lookup = {}
@@ -423,30 +462,35 @@ async def search_messages(
     )
     sender_map = dict(zip(sender_lookup.keys(), resolved_names))
 
-    output = [f"Found {len(messages)} messages matching '{search_desc}' in {context}:"]
-    for msg in messages:
+    if query:
+        header = f'Found {len(messages)} messages matching "{query}":'
+    else:
+        header = f"Found {len(messages)} messages:"
+    output = [header]
+    for i, msg in enumerate(messages, 1):
         sender_obj = msg.get("sender", {})
         sender_key = sender_obj.get("name", "")
         sender = sender_map.get(sender_key) or await _resolve_sender(
             people_service, sender_obj
         )
         create_time = msg.get("createTime", "Unknown Time")
-        text_content = msg.get("text", "No text content")
-        space_name = msg.get("_space_name", "Unknown Space")
+        ts = _format_timestamp(create_time, date_only=True)
+        text_content = msg.get("text", "")
+        space_display = msg.get("_space_name", "Unknown Space")
 
         # Truncate long messages
         if len(text_content) > 100:
             text_content = text_content[:100] + "..."
 
         rich_links = _extract_rich_links(msg)
-        links_suffix = "".join(f" [linked: {url}]" for url in rich_links)
+        links_suffix = "".join(f" [link: {url}]" for url in rich_links)
         attachments = msg.get("attachment", [])
         att_suffix = "".join(
-            f" [attachment: {a.get('contentName', 'unnamed')} ({a.get('contentType', 'unknown type')})]"
+            f" [attachment: {a.get('contentName', 'unnamed')}]"
             for a in attachments
         )
         output.append(
-            f"- [{create_time}] {sender} in '{space_name}': {text_content}{links_suffix}{att_suffix}"
+            f"  {i}. {sender} in #{space_display} ({ts}): {text_content}{links_suffix}{att_suffix}"
         )
 
     return "\n".join(output)
@@ -484,8 +528,20 @@ async def create_reaction(
         .execute
     )
 
-    reaction_name = reaction.get("name", "")
-    return f"Reacted with {emoji_unicode} on message {message_id}. Reaction ID: {reaction_name}"
+    # Resolve the space display name from the message_id (format: spaces/X/messages/Y)
+    parts = message_id.split("/")
+    space_resource = "/".join(parts[:2]) if len(parts) >= 2 else ""
+    space_display = message_id
+    if space_resource:
+        try:
+            space_info = await asyncio.to_thread(
+                service.spaces().get(name=space_resource).execute
+            )
+            space_display = space_info.get("displayName", message_id)
+        except Exception:
+            space_display = space_resource
+
+    return f"Reacted with {emoji_unicode} on message in #{space_display}"
 
 
 @server.tool()
@@ -521,12 +577,12 @@ async def download_chat_attachment(
 
     attachments = msg.get("attachment", [])
     if not attachments:
-        return f"No attachments found on message {message_id}."
+        return "No attachments found on this message"
 
     if attachment_index < 0 or attachment_index >= len(attachments):
         return (
-            f"Invalid attachment_index {attachment_index}. "
-            f"Message has {len(attachments)} attachment(s) (0-{len(attachments) - 1})."
+            f"Invalid attachment index {attachment_index} \u2014 "
+            f"message has {len(attachments)} attachment(s) (0\u2013{len(attachments) - 1})"
         )
 
     att = attachments[attachment_index]
@@ -550,7 +606,7 @@ async def download_chat_attachment(
     # and AuthorizedHttp fail in OAuth 2.1 (no refresh_token). The attachment's
     # downloadUri points to chat.google.com which requires browser cookies.
     if not media_resource and not att_name:
-        return f"No resource name available for attachment '{filename}'."
+        return f"No downloadable resource found for \"{filename}\""
 
     # Prefer attachmentDataRef.resourceName for the media endpoint
     resource_name = media_resource or att_name
@@ -574,22 +630,12 @@ async def download_chat_attachment(
         return f"Failed to download attachment '{filename}': {e}"
 
     size_bytes = len(file_bytes)
-    size_kb = size_bytes / 1024
 
     # Check if we're in stateless mode (can't save files)
     from auth.oauth_config import is_stateless_mode
 
     if is_stateless_mode():
-        b64_preview = base64.urlsafe_b64encode(file_bytes).decode("utf-8")[:100]
-        return "\n".join(
-            [
-                f"Attachment downloaded: {filename} ({content_type})",
-                f"Size: {size_kb:.1f} KB ({size_bytes} bytes)",
-                "",
-                "Stateless mode: File storage disabled.",
-                f"Base64 preview: {b64_preview}...",
-            ]
-        )
+        return f'Downloaded "{filename}" ({_format_size(size_bytes)}) \u2014 stateless mode, file storage disabled'
 
     # Save to local disk
     from core.attachment_storage import get_attachment_storage, get_attachment_url
@@ -601,23 +647,16 @@ async def download_chat_attachment(
         base64_data=b64_data, filename=filename, mime_type=content_type
     )
 
-    result_lines = [
-        f"Attachment downloaded: {filename}",
-        f"Type: {content_type}",
-        f"Size: {size_kb:.1f} KB ({size_bytes} bytes)",
-    ]
+    size_label = _format_size(size_bytes)
 
     if get_transport_mode() == "stdio":
-        result_lines.append(f"\nSaved to: {result.path}")
-        result_lines.append(
-            "\nThe file has been saved to disk and can be accessed directly via the file path."
+        logger.info(
+            f"[download_chat_attachment] Saved {size_label} attachment to {result.path}"
         )
+        return f'Downloaded "{filename}" ({size_label}) \u2014 {result.path}'
     else:
-        download_url = get_attachment_url(result.file_id)
-        result_lines.append(f"\nDownload URL: {download_url}")
-        result_lines.append("\nThe file will expire after 1 hour.")
-
-    logger.info(
-        f"[download_chat_attachment] Saved {size_kb:.1f} KB attachment to {result.path}"
-    )
-    return "\n".join(result_lines)
+        dl_url = get_attachment_url(result.file_id)
+        logger.info(
+            f"[download_chat_attachment] Saved {size_label} attachment to {result.path}"
+        )
+        return f'Downloaded "{filename}" ({size_label}) \u2014 {dl_url}'

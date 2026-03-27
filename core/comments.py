@@ -7,6 +7,7 @@ All Google Workspace apps (Docs, Sheets, Slides) use the Drive API for comment o
 
 import logging
 import asyncio
+from datetime import datetime
 from typing import Optional
 
 from auth.service_decorator import require_google_service
@@ -14,6 +15,28 @@ from core.server import server
 from core.utils import handle_http_errors
 
 logger = logging.getLogger(__name__)
+
+
+def _format_timestamp(iso_str: str) -> str:
+    """Format an ISO 8601 timestamp into a human-friendly string like 'Mar 26, 10:30 AM'."""
+    if not iso_str:
+        return "Unknown time"
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return dt.strftime("%b %d, %I:%M %p").replace(" 0", " ")
+    except (ValueError, AttributeError):
+        return iso_str
+
+
+async def _get_file_title(service, file_id: str, app_name: str) -> str:
+    """Fetch the human-readable title of a Drive file, falling back to the app_name + ID."""
+    try:
+        meta = await asyncio.to_thread(
+            service.files().get(fileId=file_id, fields="name").execute
+        )
+        return meta.get("name", f"{app_name} {file_id}")
+    except Exception:
+        return f"{app_name} {file_id}"
 
 
 async def _manage_comment_dispatch(
@@ -181,6 +204,8 @@ async def _read_comments_impl(service, app_name: str, file_id: str) -> str:
     """Implementation for reading comments from any Google Workspace file."""
     logger.info(f"[read_{app_name}_comments] Reading comments for {app_name} {file_id}")
 
+    title = await _get_file_title(service, file_id, app_name)
+
     response = await asyncio.to_thread(
         service.comments()
         .list(
@@ -193,44 +218,35 @@ async def _read_comments_impl(service, app_name: str, file_id: str) -> str:
     comments = response.get("comments", [])
 
     if not comments:
-        return f"No comments found in {app_name} {file_id}"
+        return f'No comments found on "{title}"'
 
-    output = [f"Found {len(comments)} comments in {app_name} {file_id}:\\n"]
+    output = [f'Found {len(comments)} comment{"s" if len(comments) != 1 else ""} on "{title}":']
 
-    for comment in comments:
+    for idx, comment in enumerate(comments, start=1):
         author = comment.get("author", {}).get("displayName", "Unknown")
         content = comment.get("content", "")
-        created = comment.get("createdTime", "")
+        created = _format_timestamp(comment.get("createdTime", ""))
         resolved = comment.get("resolved", False)
-        comment_id = comment.get("id", "")
         status = " [RESOLVED]" if resolved else ""
 
         quoted_text = comment.get("quotedFileContent", {}).get("value", "")
+        quoted_part = f' (on "{quoted_text}")' if quoted_text else ""
 
-        output.append(f"Comment ID: {comment_id}")
-        output.append(f"Author: {author}")
-        output.append(f"Created: {created}{status}")
-        if quoted_text:
-            output.append(f"Quoted text: {quoted_text}")
-        output.append(f"Content: {content}")
+        line = f'  {idx}. {author} ({created}): "{content}"{quoted_part}{status}'
+        output.append(line)
 
-        # Add replies if any
+        # Add reply count summary
         replies = comment.get("replies", [])
         if replies:
-            output.append(f"  Replies ({len(replies)}):")
+            reply_count = len(replies)
+            output.append(f'     \u2014 {reply_count} repl{"ies" if reply_count != 1 else "y"}')
             for reply in replies:
                 reply_author = reply.get("author", {}).get("displayName", "Unknown")
                 reply_content = reply.get("content", "")
-                reply_created = reply.get("createdTime", "")
-                reply_id = reply.get("id", "")
-                output.append(f"    Reply ID: {reply_id}")
-                output.append(f"    Author: {reply_author}")
-                output.append(f"    Created: {reply_created}")
-                output.append(f"    Content: {reply_content}")
+                reply_created = _format_timestamp(reply.get("createdTime", ""))
+                output.append(f'       {reply_author} ({reply_created}): "{reply_content}"')
 
-        output.append("")  # Empty line between comments
-
-    return "\\n".join(output)
+    return "\n".join(output)
 
 
 async def _create_comment_impl(
@@ -244,9 +260,11 @@ async def _create_comment_impl(
     """
     logger.info(f"[create_{app_name}_comment] Creating comment in {app_name} {file_id}")
 
+    title = await _get_file_title(service, file_id, app_name)
+
     body = {"content": comment_content}
 
-    comment = await asyncio.to_thread(
+    await asyncio.to_thread(
         service.comments()
         .create(
             fileId=file_id,
@@ -256,11 +274,7 @@ async def _create_comment_impl(
         .execute
     )
 
-    comment_id = comment.get("id", "")
-    author = comment.get("author", {}).get("displayName", "Unknown")
-    created = comment.get("createdTime", "")
-
-    return f"Comment created successfully!\\nComment ID: {comment_id}\\nAuthor: {author}\\nCreated: {created}\\nContent: {comment_content}"
+    return f'Added comment on "{title}" \u2014 "{comment_content}"'
 
 
 async def _reply_to_comment_impl(
@@ -271,9 +285,11 @@ async def _reply_to_comment_impl(
         f"[reply_to_{app_name}_comment] Replying to comment {comment_id} in {app_name} {file_id}"
     )
 
+    title = await _get_file_title(service, file_id, app_name)
+
     body = {"content": reply_content}
 
-    reply = await asyncio.to_thread(
+    await asyncio.to_thread(
         service.replies()
         .create(
             fileId=file_id,
@@ -284,11 +300,7 @@ async def _reply_to_comment_impl(
         .execute
     )
 
-    reply_id = reply.get("id", "")
-    author = reply.get("author", {}).get("displayName", "Unknown")
-    created = reply.get("createdTime", "")
-
-    return f"Reply posted successfully!\\nReply ID: {reply_id}\\nAuthor: {author}\\nCreated: {created}\\nContent: {reply_content}"
+    return f'Replied to comment on "{title}" \u2014 "{reply_content}"'
 
 
 async def _resolve_comment_impl(
@@ -299,9 +311,11 @@ async def _resolve_comment_impl(
         f"[resolve_{app_name}_comment] Resolving comment {comment_id} in {app_name} {file_id}"
     )
 
+    title = await _get_file_title(service, file_id, app_name)
+
     body = {"content": "This comment has been resolved.", "action": "resolve"}
 
-    reply = await asyncio.to_thread(
+    await asyncio.to_thread(
         service.replies()
         .create(
             fileId=file_id,
@@ -312,8 +326,4 @@ async def _resolve_comment_impl(
         .execute
     )
 
-    reply_id = reply.get("id", "")
-    author = reply.get("author", {}).get("displayName", "Unknown")
-    created = reply.get("createdTime", "")
-
-    return f"Comment {comment_id} has been resolved successfully.\\nResolve reply ID: {reply_id}\\nAuthor: {author}\\nCreated: {created}"
+    return f'Resolved comment on "{title}"'
