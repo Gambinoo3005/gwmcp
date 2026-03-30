@@ -92,35 +92,6 @@ def _validate_client_secret(path):
     return client_id, client_secret
 
 
-def _detect_python_command():
-    """Return the Python command path that should be used in mcp.json.
-
-    Prefers the base Python interpreter over a venv-local one,
-    since mcp.json is run by Claude Code outside any venv.
-    """
-    exe = sys.executable
-
-    # If running inside a uv tool venv, find the real system Python
-    if "uv" in exe and "tools" in exe:
-        # Check common real Python install locations (Windows)
-        for candidate in [
-            os.path.join("C:\\", "Python313", "python.EXE"),
-            os.path.join("C:\\", "Python312", "python.EXE"),
-            os.path.join("C:\\", "Python311", "python.EXE"),
-        ]:
-            if os.path.exists(candidate):
-                return candidate
-
-        # Try to find python via PATH, excluding WindowsApps stub and uv venvs
-        for candidate in [shutil.which("python3"), shutil.which("python")]:
-            if candidate and os.path.exists(candidate):
-                # Skip the Windows Store stub and uv venv pythons
-                if "WindowsApps" not in candidate and "tools" not in candidate:
-                    return candidate
-
-    return exe
-
-
 def _write_mcp_json(client_secret_path, user_email):
     """Write or merge the Claude Code mcp.json config."""
     mcp_path = _claude_mcp_json_path()
@@ -141,9 +112,6 @@ def _write_mcp_json(client_secret_path, user_email):
     if "mcpServers" not in existing:
         existing["mcpServers"] = {}
 
-    # Detect the right python path and build the command
-    python_cmd = _detect_python_command()
-
     # Build env block - only GOOGLE_CLIENT_SECRET_PATH is needed
     # (main.py auto-extracts client_id/secret from the JSON file)
     env = {
@@ -153,9 +121,12 @@ def _write_mcp_json(client_secret_path, user_email):
     if user_email:
         env["USER_GOOGLE_EMAIL"] = user_email
 
+    # Use uvx directly — stable across all directories and uv cache states.
+    # Previous approach detected a Python path and used `python -m uv tool run`,
+    # which could resolve to a fragile uv cache path that breaks when the cache shifts.
     existing["mcpServers"]["google-workspace"] = {
-        "command": python_cmd,
-        "args": ["-m", "uv", "tool", "run", "gwmcp", "--single-user"],
+        "command": "uvx",
+        "args": ["gwmcp", "--single-user"],
         "env": env,
     }
 

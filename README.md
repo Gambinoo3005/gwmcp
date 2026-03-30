@@ -182,8 +182,8 @@ After `gwmcp setup`, your `~/.claude/mcp.json` will look like:
 {
   "mcpServers": {
     "google-workspace": {
-      "command": "python",
-      "args": ["-m", "uv", "tool", "run", "gwmcp", "--single-user"],
+      "command": "uvx",
+      "args": ["gwmcp", "--single-user"],
       "env": {
         "GOOGLE_CLIENT_SECRET_PATH": "/path/to/.google_workspace_mcp/client_secret.json"
       }
